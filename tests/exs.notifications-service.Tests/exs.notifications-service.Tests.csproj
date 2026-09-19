@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>exs.notifications_service.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\exs.notifications-service\exs.notifications-service.csproj" />
+    <!-- Test-only: gives these tests a real, concrete DbContext (SQLite in-memory) to back IRepository
+         with instead of a mocked one - exs.notifications-service itself has no DB context of its own. -->
+    <ProjectReference Include="..\..\exs.notifications-database\exs.notifications-database.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="Shouldly" Version="4.3.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+  </ItemGroup>
+
+</Project>

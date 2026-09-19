@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>exs.notifications_pipeline.E2ETests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Exercises the real pipeline end to end: NotificationSender -> NotificationService (fan-out) ->
+         FcmNotificationsProcessor -> Worker (poll/expire) -> NotificationQueueProcessor -> FcmSent.
+         Only IFcmMessageSender (the actual Firebase/network call) and the Postgres connection are
+         substituted - everything else is the real production wiring. -->
+    <ProjectReference Include="..\..\exs.notifications-service\exs.notifications-service.csproj" />
+    <ProjectReference Include="..\..\exs.notifications-database\exs.notifications-database.csproj" />
+    <ProjectReference Include="..\..\exs.fcm-sender\exs.fcm-sender.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="Shouldly" Version="4.3.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+  </ItemGroup>
+
+</Project>

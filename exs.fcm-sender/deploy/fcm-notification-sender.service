@@ -1,0 +1,25 @@
+# Sample systemd unit - copy to /etc/systemd/system/fcm-notification-sender.service, adjust the
+# paths/user below, then:
+#   systemctl daemon-reload
+#   systemctl enable --now fcm-notification-sender
+#
+# Expects a `dotnet publish` output at /opt/fcm-notification-sender, with a sibling
+# /opt/local_configs/local_server.json (one level up from the publish dir - see Program.cs)
+# holding the real ConnectionStrings:MainDatabase and FcmSender:FirebaseCredentialsFile.
+
+[Unit]
+Description=FCM notification sender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory=/opt/fcm-notification-sender
+ExecStart=/usr/bin/dotnet /opt/fcm-notification-sender/exs.fcm-sender.dll
+Restart=on-failure
+RestartSec=5
+User=fcm-notification-sender
+Environment=DOTNET_ENVIRONMENT=Production
+
+[Install]
+WantedBy=multi-user.target

@@ -48,9 +48,11 @@ namespace exs.notifications_service.Tests
 				await service.StopAsync(CancellationToken.None);
 			}
 
-			transportProcessor.Calls.Single().UserIds.ShouldBe([1, 2], ignoreOrder: true);
 			await using var db = createContext();
-			(await db.Set<Notification>().SingleAsync()).Status.ShouldBe(NotificationStatus.Processed);
+			var seeded = await db.Set<Notification>().SingleAsync();
+			transportProcessor.Calls.Single().NotificationId.ShouldBe(seeded.Id);
+			transportProcessor.Calls.Single().UserIds.ShouldBe([1, 2], ignoreOrder: true);
+			seeded.Status.ShouldBe(NotificationStatus.Processed);
 		}
 
 		[Fact]
@@ -117,7 +119,7 @@ namespace exs.notifications_service.Tests
 				seed.Add(notification);
 				await seed.SaveChangesAsync();
 			}
-			service.EnqueueNotification(notification, [5]).ShouldBeTrue();
+			service.EnqueueNotification(notification.Id, [5]).ShouldBeTrue();
 
 			try
 			{
@@ -128,9 +130,66 @@ namespace exs.notifications_service.Tests
 				await service.StopAsync(CancellationToken.None);
 			}
 
+			transportProcessor.Calls.Single().NotificationId.ShouldBe(notification.Id);
 			transportProcessor.Calls.Single().UserIds.ShouldBe([5]);
 			await using var db = createContext();
 			(await db.Set<Notification>().SingleAsync(n => n.Id == notification.Id)).Status.ShouldBe(NotificationStatus.Processed);
+		}
+
+		[Fact]
+		public async Task StartAsync_SeveralPreExistingNotifications_AllMarkedProcessedByTheOneBulkUpdate()
+		{
+			// Status is no longer written per notification as it is handled - the whole batch is flipped
+			// in a single ExecuteUpdate after the loop. That update runs outside the change tracker and
+			// against a list built during the loop, so it is worth pinning that every id in a multi-item
+			// batch actually lands in it.
+			await seedNotificationAsync("First", [1], ageMinutes: 1);
+			await seedNotificationAsync("Second", [2], ageMinutes: 2);
+			await seedNotificationAsync("Third", [3], ageMinutes: 3);
+			var transportProcessor = new RecordingTransportProcessor();
+			var service = createService(transportProcessor);
+
+			await service.StartAsync(CancellationToken.None);
+			try
+			{
+				await waitUntilAsync(() => transportProcessor.Calls.Count >= 3);
+			}
+			finally
+			{
+				await service.StopAsync(CancellationToken.None);
+			}
+
+			await using var db = createContext();
+			var notifications = await db.Set<Notification>().ToListAsync();
+			notifications.Count.ShouldBe(3);
+			notifications.ShouldAllBe(n => n.Status == NotificationStatus.Processed);
+			transportProcessor.Calls.Select(c => c.NotificationId).ShouldBe(notifications.Select(n => n.Id), ignoreOrder: true);
+		}
+
+		[Fact]
+		public async Task TransportProcessorThrows_NotificationIsLeftNewSoItCanBeRetried()
+		{
+			// The id is only added to the bulk-update list once ProcessNotificationAsync has returned and
+			// its fcm_queue rows are committed. A notification whose fan-out threw must stay New: marking
+			// it Processed would lose it permanently, since nothing but the New sweep ever looks at it
+			// again.
+			await seedNotificationAsync("Doomed", [1], ageMinutes: 1);
+			var transportProcessor = new RecordingTransportProcessor { ThrowAfterRecording = new InvalidOperationException("transport is down") };
+			var service = createService(transportProcessor);
+
+			await service.StartAsync(CancellationToken.None);
+			try
+			{
+				await waitUntilAsync(() => transportProcessor.Calls.Count >= 1);
+				await Task.Delay(100); // let the batch finish past the point where the bulk update would run
+			}
+			finally
+			{
+				await service.StopAsync(CancellationToken.None);
+			}
+
+			await using var db = createContext();
+			(await db.Set<Notification>().SingleAsync()).Status.ShouldBe(NotificationStatus.New);
 		}
 
 		[Fact]
@@ -203,12 +262,15 @@ namespace exs.notifications_service.Tests
 		private sealed class RecordingTransportProcessor : ITransportNotificationProcessor
 		{
 			public byte TransportType => NotificationTransportType.FCM;
-			public List<(Notification Notification, List<int> UserIds)> Calls { get; } = [];
+			public List<(int NotificationId, List<int> UserIds)> Calls { get; } = [];
 
-			public Task ProcessNotificationAsync(IRepository repository, Notification notification, List<int> usersIds, CancellationToken cancellationToken)
+			/// <summary>When set, every call records itself and then throws it.</summary>
+			public Exception? ThrowAfterRecording { get; set; }
+
+			public Task ProcessNotificationAsync(IRepository repository, int notificationId, List<int> usersIds, CancellationToken cancellationToken)
 			{
-				Calls.Add((notification, usersIds));
-				return Task.CompletedTask;
+				Calls.Add((notificationId, usersIds));
+				return ThrowAfterRecording is null ? Task.CompletedTask : Task.FromException(ThrowAfterRecording);
 			}
 		}
 	}

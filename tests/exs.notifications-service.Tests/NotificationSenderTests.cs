@@ -66,11 +66,32 @@ namespace exs.notifications_service.Tests
 
 			((IDisposable)sender).Dispose();
 
+			var saved = await context.Set<Notification>().SingleAsync();
+			saved.Id.ShouldNotBe(0);
 			fakeService.EnqueuedCalls.Count.ShouldBe(1);
 			var call = fakeService.EnqueuedCalls[0];
-			call.Notification.Title.ShouldBe("Title");
-			call.Notification.EntityId.ShouldBe(42);
+			call.NotificationId.ShouldBe(saved.Id);
 			call.UserIds.ShouldBe([10, 20], ignoreOrder: true);
+		}
+
+		[Fact]
+		public async Task CreateNotification_NeverSaved_EnqueuesNothing()
+		{
+			// Dispose() runs during stack unwinding, so it also fires when the caller's SaveAsync threw
+			// or the surrounding transaction rolled back. An unsaved Notification still has Id == 0, and
+			// enqueueing that would hand the background loop an id no row will ever have - the fan-out
+			// would then create fcm_queue rows against a nonexistent notification and trip the FK.
+			var fakeService = new FakeNotificationService();
+			var sender = new NotificationSender(fakeService, NullLogger<NotificationSender>.Instance);
+			await using var context = createContext();
+			IRepository repository = new EntityFrameworkRepository<NotificationDatabaseContext>(context);
+
+			sender.CreateNotification(repository, notificationType: 1, entityId: 0, "Unsaved", "Body", "", [1]);
+			// deliberately no SaveAsync - stands in for a failed save or a rolled-back transaction
+
+			((IDisposable)sender).Dispose();
+
+			fakeService.EnqueuedCalls.ShouldBeEmpty();
 		}
 
 		[Fact]
@@ -91,9 +112,11 @@ namespace exs.notifications_service.Tests
 
 			((IDisposable)sender).Dispose();
 
+			var firstId = (await context.Set<Notification>().SingleAsync(n => n.Title == "First")).Id;
+			var secondId = (await context.Set<Notification>().SingleAsync(n => n.Title == "Second")).Id;
 			fakeService.EnqueuedCalls.Count.ShouldBe(2);
-			fakeService.EnqueuedCalls.Single(c => c.Notification.Title == "First").UserIds.ShouldBe([1]);
-			fakeService.EnqueuedCalls.Single(c => c.Notification.Title == "Second").UserIds.ShouldBe([2, 3], ignoreOrder: true);
+			fakeService.EnqueuedCalls.Single(c => c.NotificationId == firstId).UserIds.ShouldBe([1]);
+			fakeService.EnqueuedCalls.Single(c => c.NotificationId == secondId).UserIds.ShouldBe([2, 3], ignoreOrder: true);
 		}
 
 		[Fact]
@@ -118,12 +141,12 @@ namespace exs.notifications_service.Tests
 
 		private sealed class FakeNotificationService : INotificationService
 		{
-			public List<(Notification Notification, List<int> UserIds)> EnqueuedCalls { get; } = [];
+			public List<(int NotificationId, List<int> UserIds)> EnqueuedCalls { get; } = [];
 			public Queue<bool>? NextResults { get; set; }
 
-			public bool EnqueueNotification(Notification notification, List<int> userIds)
+			public bool EnqueueNotification(int notificationId, List<int> userIds)
 			{
-				EnqueuedCalls.Add((notification, userIds));
+				EnqueuedCalls.Add((notificationId, userIds));
 				return NextResults is { Count: > 0 } ? NextResults.Dequeue() : true;
 			}
 		}

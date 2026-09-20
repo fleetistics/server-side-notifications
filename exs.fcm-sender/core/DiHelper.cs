@@ -9,6 +9,10 @@ namespace exs.fcm_sender.core
 {
 	public static class DiHelper
 	{
+		// Note: nothing here applies migrations, and the worker deliberately doesn't. If you ever add
+		// Database.Migrate() on startup, it must set MigrationsHistoryTable to
+		// NotificationDatabaseContextFactory.MIGRATIONS_HISTORY_TABLE - AddDbServices leaves the Npgsql
+		// default, which is the api-server's history table, and this context's migrations are not in it.
 		public static void RegisterServices(IServiceCollection services, IConfiguration configuration)
 		{
 			services

@@ -31,7 +31,7 @@ namespace exs.notifications_service.Tests
 		}
 
 		[Fact]
-		public async Task ProcessNotificationAsync_CreatesOneFcmQueueRowPerUserAndMarksNotificationProcessed()
+		public async Task ProcessNotificationAsync_CreatesOneFcmQueueRowPerUser()
 		{
 			await using var context = createContext();
 			IRepository repository = new EntityFrameworkRepository<NotificationDatabaseContext>(context);
@@ -39,10 +39,9 @@ namespace exs.notifications_service.Tests
 			repository.Create(notification);
 			await repository.SaveAsync();
 
-			await new FcmNotificationsProcessor().ProcessNotificationAsync(repository, notification, [1, 2, 3], CancellationToken.None);
+			await new FcmNotificationsProcessor().ProcessNotificationAsync(repository, notification.Id, [1, 2, 3], CancellationToken.None);
 			await repository.SaveAsync();
 
-			notification.Status.ShouldBe(NotificationStatus.Processed);
 			var queueRows = await context.Set<FcmQueue>().ToListAsync();
 			queueRows.Count.ShouldBe(3);
 			queueRows.Select(q => q.UserId).ShouldBe([1, 2, 3], ignoreOrder: true);
@@ -50,7 +49,7 @@ namespace exs.notifications_service.Tests
 		}
 
 		[Fact]
-		public async Task ProcessNotificationAsync_NoUsers_CreatesNoQueueRowsButStillMarksProcessed()
+		public async Task ProcessNotificationAsync_NoUsers_CreatesNoQueueRows()
 		{
 			await using var context = createContext();
 			IRepository repository = new EntityFrameworkRepository<NotificationDatabaseContext>(context);
@@ -58,11 +57,30 @@ namespace exs.notifications_service.Tests
 			repository.Create(notification);
 			await repository.SaveAsync();
 
-			await new FcmNotificationsProcessor().ProcessNotificationAsync(repository, notification, [], CancellationToken.None);
+			await new FcmNotificationsProcessor().ProcessNotificationAsync(repository, notification.Id, [], CancellationToken.None);
 			await repository.SaveAsync();
 
-			notification.Status.ShouldBe(NotificationStatus.Processed);
 			(await context.Set<FcmQueue>().AnyAsync()).ShouldBeFalse();
+		}
+
+		[Fact]
+		public async Task ProcessNotificationAsync_LeavesNotificationStatusAlone()
+		{
+			// The processor used to set Status = Processed itself, while NotificationService set it
+			// again straight afterwards. Status is now solely the orchestrator's, flipped in one bulk
+			// ExecuteUpdate for the whole batch once every item has succeeded - a processor that writes
+			// it too would mark notifications delivered before their queue rows are committed.
+			await using var context = createContext();
+			IRepository repository = new EntityFrameworkRepository<NotificationDatabaseContext>(context);
+			var notification = new Notification { Date = DateTime.UtcNow, TypeId = 1, Title = "t", Body = "b", Payload = "" };
+			repository.Create(notification);
+			await repository.SaveAsync();
+
+			await new FcmNotificationsProcessor().ProcessNotificationAsync(repository, notification.Id, [1], CancellationToken.None);
+			await repository.SaveAsync();
+
+			await using var verify = createContext();
+			(await verify.Set<Notification>().SingleAsync()).Status.ShouldBe(NotificationStatus.New);
 		}
 
 		private NotificationDatabaseContext createContext() =>

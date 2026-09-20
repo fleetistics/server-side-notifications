@@ -6,6 +6,6 @@ namespace exs.notifications_service.Interfaces
 	public interface ITransportNotificationProcessor
 	{
 		byte TransportType { get; }
-		Task ProcessNotificationAsync(IRepository repository, Notification notification, List<int> usersIds, CancellationToken cancellationToken);
+		Task ProcessNotificationAsync(IRepository repository, int notificationId, List<int> usersIds, CancellationToken cancellationToken);
 	}
 }

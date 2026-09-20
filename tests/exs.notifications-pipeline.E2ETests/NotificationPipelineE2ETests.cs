@@ -5,6 +5,7 @@ using exs.fcm_sender.Fcm;
 using exs.modelCommons.AppStructure;
 using exs.modelCommons.UserManagement;
 using exs.notifications_database;
+using exs.notifications_model.Notifications;
 using exs.notifications_model.Transports;
 using exs.notifications_service.Impl;
 using exs.notifications_service.Interfaces;
@@ -111,6 +112,12 @@ namespace exs.notifications_pipeline.E2ETests
 			sent.Error.ShouldBeNull();
 			sent.UserId.ShouldBe(7);
 			(await finalDb.Set<FcmQueue>().AnyAsync()).ShouldBeFalse();
+			// Worth asserting here specifically: the channel now carries ids rather than entities, so
+			// nothing on this path has the Notification in hand and the status is flipped by a bulk
+			// ExecuteUpdate outside the change tracker. This is the only test that runs the real
+			// exs.notifications_service.core.DiHelper wiring, so it is the only one that would catch
+			// that update silently not reaching the row it was meant to.
+			(await finalDb.Set<Notification>().SingleAsync()).Status.ShouldBe(NotificationStatus.Processed);
 		}
 
 		[Fact]

@@ -24,16 +24,16 @@ namespace exs.notifications_service.Impl
 			await base.StopAsync(cancellationToken);
 		}
 
-		public bool EnqueueNotification(Notification notification, List<int> userIds)
+		public bool EnqueueNotification(int notificationId, List<int> userIds)
 		{
 			var result = mNotificationQueue.Writer.TryWrite(new NotificationQueueItem
 			{
-				Notification = notification,
+				NotificationId = notificationId,
 				UserIds = userIds
 			});
 			if (!result)
 			{
-				mLogger.LogWarning("Failed to enqueue notification {NotificationId} for users: {UserIds}. Queue is full.", notification.Id, string.Join(", ", userIds));
+				mLogger.LogWarning("Failed to enqueue notification {NotificationId} for users: {UserIds}. Queue is full.", notificationId, string.Join(", ", userIds));
 			}
 			return result;
 		}
@@ -122,7 +122,7 @@ namespace exs.notifications_service.Impl
 
 			var items = notifications.Select(n => new NotificationQueueItem
 			{
-				Notification = n,
+				NotificationId = n.Id,
 				UserIds = notificationsToUsers.Where(ntu => ntu.NotificationId == n.Id).Select(ntu => ntu.UserId).ToList()
 			}).ToList();
 
@@ -138,32 +138,31 @@ namespace exs.notifications_service.Impl
 				mLogger.LogWarning("No transport processor found for FCM.");
 				return;
 			}
+			var ids = new List<int>(queueItems.Count);
 			foreach (var queueItem in queueItems)
 			{
 				try
 				{
 					stoppingToken.ThrowIfCancellationRequested();
-					await transportProcessor.ProcessNotificationAsync(repository, queueItem.Notification, queueItem.UserIds, stoppingToken);
-					// Attach is a no-op when this came from the startup catch-up pass (already tracked
-					// by this same repository) but is required for a live-enqueued notification: it was
-					// created and saved through the caller's own DbContext, so this call's freshly
-					// scoped repository has never seen it, and mutating Status below would otherwise be
-					// silently lost instead of persisted.
-					repository.Attach(queueItem.Notification);
-					queueItem.Notification.Status = NotificationStatus.Processed;
+					await transportProcessor.ProcessNotificationAsync(repository, queueItem.NotificationId, queueItem.UserIds, stoppingToken);
 					await repository.SaveAsync(stoppingToken);
-					mLogger.LogInformation("Processed notification {NotificationId} for users: {UserIds}.", queueItem.Notification.Id, string.Join(", ", queueItem.UserIds));
+					ids.Add(queueItem.NotificationId);
 				}
 				catch (Exception ex)
 				{
-					mLogger.LogError(ex, "Error processing notification {NotificationId}.", queueItem.Notification.Id);
+					mLogger.LogError(ex, "Error processing notification {NotificationId}.", queueItem.NotificationId);
 				}
+			}
+			if (ids.Count > 0)
+			{
+				await repository.GetQueryable<Notification>(n => ids.Contains(n.Id))
+					.ExecuteUpdateAsync(s => s.SetProperty(n => n.Status, NotificationStatus.Processed), stoppingToken);
 			}
 		}
 
 		private class NotificationQueueItem
 		{
-			public Notification Notification { get; set; } = null!;
+			public int NotificationId { get; set; }
 			public List<int> UserIds { get; set; } = null!;
 		}
 

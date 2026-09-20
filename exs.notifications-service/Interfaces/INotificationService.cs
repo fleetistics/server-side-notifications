@@ -4,6 +4,6 @@ namespace exs.notifications_service.Interfaces
 {
 	public interface INotificationService
 	{
-		bool EnqueueNotification(Notification notification, List<int> userIds);
+		bool EnqueueNotification(int notificationId, List<int> userIds);
 	}
 }

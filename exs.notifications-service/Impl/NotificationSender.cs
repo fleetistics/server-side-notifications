@@ -45,9 +45,9 @@ namespace exs.notifications_service.Impl
 			if (mNotifications.Any())
 			{
 				mLogger.LogInformation("Signaling notification queue changed");
-				foreach (var notification in mNotifications)
+				foreach (var notification in mNotifications.Where(n => n.Id != 0))
 				{
-					if (!mNotificationService.EnqueueNotification(notification, mNotificationsToUsers.Where(nu => nu.NotificationId == notification.Id).Select(nu => nu.UserId).ToList())) break;
+					if (!mNotificationService.EnqueueNotification(notification.Id, mNotificationsToUsers.Where(nu => nu.NotificationId == notification.Id).Select(nu => nu.UserId).ToList())) break;
 				}
 				mNotifications.Clear();
 				mNotificationsToUsers.Clear();

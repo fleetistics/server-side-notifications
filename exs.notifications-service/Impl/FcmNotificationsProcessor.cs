@@ -13,7 +13,7 @@ namespace exs.notifications_service.Impl
 
 		public byte TransportType => NotificationTransportType.FCM;
 
-		public async Task ProcessNotificationAsync(IRepository repository, Notification notification, List<int> usersIds, CancellationToken cancellationToken)
+		public async Task ProcessNotificationAsync(IRepository repository, int notificationId, List<int> usersIds, CancellationToken cancellationToken)
 		{
 			// Implement the logic to process the notification and send it to the users
 			// For example, you can create FcmQueue entries for each user and mark them as processed
@@ -22,13 +22,11 @@ namespace exs.notifications_service.Impl
 				var fcmQueueEntry = new FcmQueue
 				{
 					Date = DateTime.UtcNow,
-					NotificationId = notification.Id,
+					NotificationId = notificationId,
 					UserId = userId
 				};
 				repository.Create(fcmQueueEntry);
 			}
-			// Mark the notification as processed
-			notification.Status = NotificationStatus.Processed;
 		}
 	}
 }

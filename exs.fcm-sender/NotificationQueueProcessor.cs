@@ -85,7 +85,13 @@ namespace exs.fcm_sender
 			var body = queueItem.Notification.Body ?? "";
 			var payload = queueItem.Notification.Payload ?? "";
 
-			int sessionCount = activeSessions.Count;
+			if (!queueItem.IsProcessing)
+			{
+				mRepository.Attach(queueItem);
+				queueItem.IsProcessing = true;
+				await mRepository.SaveAsync(cancellationToken);
+			}
+
 			foreach (var session in activeSessions)
 			{
 				var (result, attemptCount) = await mSender.SendWithRetryAsync(
@@ -108,22 +114,10 @@ namespace exs.fcm_sender
 					NotificationId = queueItem.NotificationId,
 					UserId = queueItem.UserId,
 				});
-				if (sessionCount == 1)
-				{
-					mRepository.DeleteAll<FcmQueue>(q => q.Id == queueItem.Id);
-				}
-				else
-				{
-					mRepository.Attach(queueItem);
-					queueItem.IsProcessing = true;
-				}
 				await mRepository.SaveAsync(cancellationToken); // save each attempt as we go, so we don't lose them if the process crashes mid-batch
 			}
-			if (sessionCount > 1)
-			{
-				mRepository.DeleteAll<FcmQueue>(q => q.Id == queueItem.Id);
-				await mRepository.SaveAsync(cancellationToken);
-			}
+			mRepository.DeleteAll<FcmQueue>(q => q.Id == queueItem.Id);
+			await mRepository.SaveAsync(cancellationToken);
 		}
 
 		private readonly IRepository mRepository;

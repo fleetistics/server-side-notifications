@@ -16,6 +16,22 @@ namespace exs.notifications_service.Impl
 			mScopeFactory = scopeFactory;
 			mTransportNotificationProcessors = transportNotificationProcessors;
 			mLogger = logger;
+
+			// Built here rather than in a field initializer because it needs mLogger. DropOldest means
+			// TryWrite always reports success even when it has just evicted something, so without the
+			// itemDropped callback a full queue loses notifications completely silently - the drop is
+			// recoverable (the row is still Status=New and the sweep will find it) but a queue that is
+			// filling up at all means the reader is falling behind, which is worth knowing about.
+			mNotificationQueue = Channel.CreateBounded<NotificationQueueItem>(
+				new BoundedChannelOptions(QUEUE_CAPACITY)
+				{
+					SingleReader = true,
+					SingleWriter = false,
+					FullMode = BoundedChannelFullMode.DropOldest,
+				},
+				dropped => mLogger.LogWarning(
+					"In-memory notification queue is full ({Capacity}) - dropped notification {NotificationId}. It stays Status=New; the periodic sweep will pick it up within {SweepInterval}.",
+					QUEUE_CAPACITY, dropped.NotificationId, SweepInterval));
 		}
 
 		public override async Task StopAsync(CancellationToken cancellationToken)
@@ -33,7 +49,10 @@ namespace exs.notifications_service.Impl
 			});
 			if (!result)
 			{
-				mLogger.LogWarning("Failed to enqueue notification {NotificationId} for users: {UserIds}. Queue is full.", notificationId, string.Join(", ", userIds));
+				// Deliberately not "queue is full": with DropOldest, TryWrite only ever fails once the
+				// writer has been completed, which happens in StopAsync. A full queue drops silently and
+				// is reported by the itemDropped callback instead.
+				mLogger.LogWarning("Notification {NotificationId} for users {UserIds} was not enqueued - the service is shutting down. It stays Status=New and the next startup sweep will process it.", notificationId, string.Join(", ", userIds));
 			}
 			return result;
 		}
@@ -43,27 +62,43 @@ namespace exs.notifications_service.Impl
 			await Task.Yield(); // Ensure the method is asynchronous
 
 			await processNotificationsTable(stoppingToken);
+			var nextSweepDue = DateTime.UtcNow + SweepInterval;
 
 			while (!stoppingToken.IsCancellationRequested)
 			{
 				try
 				{
-					await mNotificationQueue.Reader.WaitToReadAsync(stoppingToken);
+					var channelStillOpen = await waitForWorkOrSweepAsync(nextSweepDue, stoppingToken);
+
 					var items = new List<NotificationQueueItem>();
 					while (mNotificationQueue.Reader.TryRead(out var item))
 					{
 						items.Add(item);
 					}
 
-					if (!items.Any())
+					if (items.Any())
 					{
-						continue;
-					}
-
-					using (var scope = mScopeFactory.CreateScope())
-					{
+						using var scope = mScopeFactory.CreateScope();
 						var repository = scope.ServiceProvider.GetRequiredService<IRepository>();
 						await processNotificationsQueue(repository, items, stoppingToken);
+					}
+
+					// Runs on this same loop, after the drain above, rather than on its own timer. That
+					// is what stops it racing the channel: a notification cannot be handed to the
+					// transport twice (once from the queue, once from the sweep) because the two paths
+					// can never be in flight at the same time.
+					if (DateTime.UtcNow >= nextSweepDue)
+					{
+						await processNotificationsTable(stoppingToken);
+						nextSweepDue = DateTime.UtcNow + SweepInterval;
+					}
+
+					// StopAsync completed the writer. Everything still buffered was just drained, and
+					// waiting on a completed channel returns immediately, so continuing would spin until
+					// the stopping token caught up.
+					if (!channelStillOpen)
+					{
+						break;
 					}
 				}
 				catch (OperationCanceledException)
@@ -86,14 +121,65 @@ namespace exs.notifications_service.Impl
 			}
 		}
 
-		private async Task processNotificationsTable(CancellationToken stoppingToken)
+		/// <summary>
+		/// Blocks until there is something in the queue or the next sweep falls due, whichever happens
+		/// first. Returns false once the channel has been completed by StopAsync.
+		/// </summary>
+		private async Task<bool> waitForWorkOrSweepAsync(DateTime nextSweepDue, CancellationToken stoppingToken)
+		{
+			var untilSweep = nextSweepDue - DateTime.UtcNow;
+			if (untilSweep <= TimeSpan.Zero)
+			{
+				return true; // already overdue - drain whatever is there and sweep immediately
+			}
+
+			// A linked source rather than Task.WhenAny over a Task.Delay: whichever way this wakes up,
+			// the WaitToReadAsync has to be cancelled rather than abandoned. The channel is SingleReader,
+			// so leaving orphaned waiters queued on it every interval is not something to risk.
+			using var wakeUp = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+			wakeUp.CancelAfter(untilSweep);
+			try
+			{
+				return await mNotificationQueue.Reader.WaitToReadAsync(wakeUp.Token);
+			}
+			catch (OperationCanceledException)
+			{
+				stoppingToken.ThrowIfCancellationRequested(); // real shutdown - let the loop's handler end it
+				return true; // just the sweep timer firing, which is an ordinary wake-up
+			}
+		}
+
+		/// <summary>
+		/// Reconciles against the notification table: anything still Status=New that the in-memory queue
+		/// did not deliver gets picked up here. Runs at startup and then every SweepInterval from the
+		/// reader loop, which is what makes the channel's DropOldest survivable - a dropped notification
+		/// is a delay of at most one interval rather than a permanent loss, and it is recovered well
+		/// inside the 30-minute EXPIRATION_INTERVAL instead of eventually being marked Expired unsent.
+		/// It also picks up rows written by anything other than this process.
+		///
+		/// Internal rather than private, on the same reasoning as Worker.pollOnceAsync: tests can then
+		/// drive one sweep deterministically instead of starting the real loop and polling the database
+		/// until something happens, which against a single shared SQLite connection is both slow and
+		/// intermittently "database is locked".
+		/// </summary>
+		internal async Task processNotificationsTable(CancellationToken stoppingToken)
 		{
 			using var scope = mScopeFactory.CreateScope();
 			var repository = scope.ServiceProvider.GetRequiredService<IRepository>();
-			var notifications = await repository.GetQueryable<Notification>().Where(n => n.Status == NotificationStatus.New).ToListAsync(stoppingToken);
+			// The grace period keeps the sweep off notifications that were only just committed and are
+			// still sitting in the in-memory queue waiting to be drained, which would otherwise be
+			// fanned out twice. Combined with running on the reader loop this closes the race in
+			// practice; it is not a hard guarantee, since a batch that took longer than the grace period
+			// to process could leave an older item still queued. Only claiming rows at selection time
+			// (see the FCM worker's missing claim mechanism) would make it airtight.
+			var sweepHorizon = DateTime.UtcNow - SweepGracePeriod;
+			var notifications = await repository.GetQueryable<Notification>()
+				.Where(n => n.Status == NotificationStatus.New && n.Date < sweepHorizon)
+				.ToListAsync(stoppingToken);
 			if (!notifications.Any())
 			{
-				mLogger.LogInformation("No unprocessed notifications found.");
+				// Debug, not Information: this is the normal outcome of every sweep on a healthy system.
+				mLogger.LogDebug("No unprocessed notifications found.");
 				return;
 			}
 			var now = DateTime.UtcNow;
@@ -110,9 +196,11 @@ namespace exs.notifications_service.Impl
 			}
 			if (!notifications.Any())
 			{
-				mLogger.LogInformation("No unprocessed notifications found.");
+				mLogger.LogDebug("No unprocessed notifications found.");
 				return;
 			}
+
+			mLogger.LogInformation("Sweep found {Count} unprocessed notification(s) the in-memory queue did not deliver.", notifications.Count);
 
 			var notificationsIds = notifications.Select(n => n.Id).ToList();
 			var notificationsToUsers = await repository.GetQueryable<NotificationToUser>()
@@ -166,15 +254,24 @@ namespace exs.notifications_service.Impl
 			public List<int> UserIds { get; set; } = null!;
 		}
 
+		/// <summary>
+		/// How often the reader loop reconciles against the notification table. Internal and settable so
+		/// tests can drive a sweep without waiting the real interval; nothing in production changes it.
+		/// </summary>
+		internal TimeSpan SweepInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+		/// <summary>
+		/// How recent a notification has to be for the sweep to leave it to the in-memory queue. Wide
+		/// enough to cover the gap between a row committing and the reader draining it (milliseconds in
+		/// practice), narrow enough that a genuinely stuck queue is still recovered promptly.
+		/// </summary>
+		internal TimeSpan SweepGracePeriod { get; set; } = TimeSpan.FromSeconds(30);
+
 		private readonly TimeSpan FAILURE_DELAY = TimeSpan.FromSeconds(5);
 		private readonly TimeSpan EXPIRATION_INTERVAL = TimeSpan.FromMinutes(30);
+		private const int QUEUE_CAPACITY = 100;
 
-		private Channel<NotificationQueueItem> mNotificationQueue = Channel.CreateBounded<NotificationQueueItem>(new BoundedChannelOptions(100)
-		{
-			SingleReader = true,
-			SingleWriter = false,
-			FullMode = BoundedChannelFullMode.DropOldest,
-		});
+		private readonly Channel<NotificationQueueItem> mNotificationQueue;
 		private readonly IServiceScopeFactory mScopeFactory;
 		private readonly IEnumerable<ITransportNotificationProcessor> mTransportNotificationProcessors;
 		private readonly ILogger<NotificationService> mLogger;

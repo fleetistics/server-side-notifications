@@ -15,7 +15,12 @@ namespace exs.notifications_service.Impl
 
 		public void CreateNotification(IRepository repository, short notificationType, int entityId, string title, string body, string payload, IEnumerable<int> userIds)
 		{
-			if (!userIds.Any()) throw new ArgumentException(nameof(userIds));
+			using var enumerator = userIds.GetEnumerator();
+
+			if (!enumerator.MoveNext())
+			{
+				throw new ArgumentException(nameof(userIds));
+			}
 
 			var notification = new Notification
 			{
@@ -26,23 +31,59 @@ namespace exs.notifications_service.Impl
 				Body = body,
 				Payload = payload
 			};
+
 			repository.Create(notification);
 			mNotifications.Add(notification);
-			foreach (var userId in userIds)
+
+			do
 			{
 				var notificationToUser = new NotificationToUser
 				{
 					Notification = notification,
-					UserId = userId,
+					UserId = enumerator.Current,
 				};
+
 				repository.Create(notificationToUser);
 				mNotificationsToUsers.Add(notificationToUser);
 			}
+			while (enumerator.MoveNext());
+		}
+
+		public void CreateDataNotification(IRepository repository, short notificationType, int entityId, string payload, IEnumerable<int> userIds)
+		{
+			using var enumerator = userIds.GetEnumerator();
+
+			if (!enumerator.MoveNext())
+			{
+				throw new ArgumentException(nameof(userIds));
+			}
+
+			var notification = new Notification
+			{
+				Date = DateTime.UtcNow,
+				TypeId = notificationType,
+				EntityId = entityId,
+				Payload = payload
+			};
+			repository.Create(notification);
+			mNotifications.Add(notification);
+			do
+			{
+				var notificationToUser = new NotificationToUser
+				{
+					Notification = notification,
+					UserId = enumerator.Current,
+				};
+
+				repository.Create(notificationToUser);
+				mNotificationsToUsers.Add(notificationToUser);
+			}
+			while (enumerator.MoveNext());
 		}
 
 		void IDisposable.Dispose()
 		{
-			if (mNotifications.Any())
+			if (mNotifications.Count > 0)
 			{
 				mLogger.LogInformation("Signaling notification queue changed");
 				foreach (var notification in mNotifications.Where(n => n.Id != 0))

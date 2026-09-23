@@ -79,7 +79,27 @@ namespace exs.fcm_sender.Tests
 			await using var db = createContext();
 			var sent = await db.Set<FcmSent>().SingleAsync();
 			sent.Error.ShouldBe("Expired");
+			sent.ErrorCode.ShouldBe(FcmSentErrorCode.Expired); // groupable, unlike the prose above
+			sent.ProviderMessageId.ShouldBeNull();
 			(await db.Set<FcmQueue>().AnyAsync()).ShouldBeFalse();
+		}
+
+		[Fact]
+		public async Task PollOnceAsync_ExpiryWindowComesFromConfiguration()
+		{
+			// The delivery window used to be a hardcoded 30 minutes here and another hardcoded 30 minutes
+			// in NotificationService, in a different assembly. This row is two hours old, so it would be
+			// expired under the default and must not be under a widened one.
+			await seedQueueItemAsync(userId: 1, age: TimeSpan.FromHours(2));
+			await seedUserSessionAsync(userId: 1, "token-1");
+			var stub = new StubFcmMessageSender(FcmSendResult.Ok("msg"));
+			var (worker, _) = createWorker(stub, queueExpirationMinutes: 24 * 60);
+
+			await worker.pollOnceAsync(CancellationToken.None);
+
+			stub.Calls.Count.ShouldBe(1); // sent, not expired
+			await using var db = createContext();
+			(await db.Set<FcmSent>().SingleAsync()).ErrorCode.ShouldBeNull();
 		}
 
 		[Fact]
@@ -120,11 +140,12 @@ namespace exs.fcm_sender.Tests
 			(await db.Set<FcmQueue>().CountAsync()).ShouldBe(3); // the rest stay queued for the next poll
 		}
 
-		private (Worker Worker, IServiceProvider Provider) createWorker(IFcmMessageSender sender, int batchSize = 200, int maxAttempts = 1)
+		private (Worker Worker, IServiceProvider Provider) createWorker(IFcmMessageSender sender, int batchSize = 200, int maxAttempts = 1, int queueExpirationMinutes = 30)
 		{
 			var options = new FcmSenderOptions
 			{
 				BatchSize = batchSize,
+				QueueExpirationMinutes = queueExpirationMinutes,
 				// Sequential on purpose: every scope shares one SQLite in-memory connection (via
 				// mConnection), which doesn't support concurrent commands the way production's
 				// per-scope Npgsql connections do. These tests aren't asserting anything about

@@ -16,6 +16,7 @@ namespace exs.fcm_sender
 		{
 			mScopeFactory = scopeFactory;
 			mOptions = options.Value;
+			mQueueExpiration = TimeSpan.FromMinutes(mOptions.QueueExpirationMinutes);
 			mLogger = logger;
 		}
 
@@ -64,7 +65,7 @@ namespace exs.fcm_sender
 					.ToListAsync(stoppingToken);
 
 				var now = DateTime.UtcNow;
-				var expired = batch.Where(q => q.Date < now - EXPIRATION_PERIOD).ToList();
+				var expired = batch.Where(q => q.Date < now - mQueueExpiration).ToList();
 				if (expired.Count > 0)
 				{
 					foreach (var q in expired)
@@ -74,6 +75,7 @@ namespace exs.fcm_sender
 							Date = now,
 							NotificationId = q.NotificationId,
 							UserId = q.UserId,
+							ErrorCode = FcmSentErrorCode.Expired,
 							Error = "Expired",
 						});
 						db.Delete(q);
@@ -108,8 +110,7 @@ namespace exs.fcm_sender
 			return true;
 		}
 
-		private readonly TimeSpan EXPIRATION_PERIOD = TimeSpan.FromMinutes(30);
-
+		private readonly TimeSpan mQueueExpiration;
 		private readonly IServiceScopeFactory mScopeFactory;
 		private readonly FcmSenderOptions mOptions;
 		private readonly ILogger<Worker> mLogger;

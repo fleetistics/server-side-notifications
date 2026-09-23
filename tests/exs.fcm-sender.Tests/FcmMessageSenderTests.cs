@@ -116,8 +116,76 @@ namespace exs.fcm_sender.Tests
 			}
 		}
 
+		public class IsTokenRejected
+		{
+			[Theory]
+			[InlineData(MessagingErrorCode.Unregistered)]
+			[InlineData(MessagingErrorCode.SenderIdMismatch)]
+			public void CodesMeaningTheTokenIsDead_AreRejections(MessagingErrorCode code)
+			{
+				FcmMessageSender.IsTokenRejected(code).ShouldBeTrue();
+			}
+
+			[Theory]
+			[InlineData(MessagingErrorCode.InvalidArgument)]
+			[InlineData(MessagingErrorCode.ThirdPartyAuthError)]
+			public void PermanentCodesThatAreNotAboutTheToken_AreNotRejections(MessagingErrorCode code)
+			{
+				// The important half. Both of these are permanent, so it is tempting to reuse Classify's
+				// PermanentError bucket - but InvalidArgument is usually a malformed message and
+				// ThirdPartyAuthError is our own APNs credential. Both fail every send at once, so
+				// treating them as dead tokens would clear the registration token of every active session
+				// in one poll pass with nothing to restore them from.
+				FcmMessageSender.IsTokenRejected(code).ShouldBeFalse();
+				FcmMessageSender.Classify(code).ShouldBe(FcmSendOutcome.PermanentError); // ...despite being permanent
+			}
+
+			[Theory]
+			[InlineData(MessagingErrorCode.Unavailable)]
+			[InlineData(MessagingErrorCode.Internal)]
+			[InlineData(MessagingErrorCode.QuotaExceeded)]
+			public void TransientCodes_AreNotRejections(MessagingErrorCode code)
+			{
+				FcmMessageSender.IsTokenRejected(code).ShouldBeFalse();
+			}
+
+			[Fact]
+			public void UnclassifiedNullCode_IsNotARejection()
+			{
+				FcmMessageSender.IsTokenRejected(null).ShouldBeFalse();
+			}
+		}
+
 		public class BuildMessage
 		{
+			[Fact]
+			public void EmptyTitleAndBody_CreateDataOnlyAndroidMessage()
+			{
+				var message = FcmMessageSender.BuildMessage(
+					"token", ClientDevicePlatform.Android, "", "", typeId: 1, entityId: null, payload: "", NullLogger.Instance);
+
+				message.Notification.ShouldBeNull();
+				message.Android.ShouldNotBeNull();
+				message.Android.Notification.ShouldBeNull();
+				message.Apns.ShouldBeNull();
+			}
+
+			[Fact]
+			public void EmptyTitleAndBody_CreateSilentIosMessage()
+			{
+				var message = FcmMessageSender.BuildMessage(
+					"token", ClientDevicePlatform.Ios, "", "", typeId: 1, entityId: null, payload: "", NullLogger.Instance);
+
+				message.Notification.ShouldBeNull();
+				message.Apns.ShouldNotBeNull();
+				message.Apns.Headers!["apns-push-type"].ShouldBe("background");
+				message.Apns.Headers["apns-priority"].ShouldBe("5");
+				message.Apns.Aps.ContentAvailable.ShouldBeTrue();
+				message.Apns.Aps.Alert.ShouldBeNull();
+				message.Apns.Aps.Sound.ShouldBeNull();
+				message.Android.ShouldBeNull();
+			}
+
 			[Fact]
 			public void AndroidPlatform_GetsAndroidConfigOnly()
 			{

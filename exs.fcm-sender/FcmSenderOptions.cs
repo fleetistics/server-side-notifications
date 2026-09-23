@@ -11,6 +11,17 @@ namespace exs.fcm_sender
 		/// <summary>Max queue rows processed concurrently within a batch.</summary>
 		public int MaxConcurrency { get; set; } = 8;
 
+		/// <summary>
+		/// How long an fcm_queue row may sit undelivered before it is dropped and recorded as Expired.
+		///
+		/// This is the second half of the pipeline's delivery budget, and it runs on its own clock: the
+		/// queue row is stamped when the fan-out creates it, not when the notification was created, so
+		/// the real worst case from creation to giving up is this plus
+		/// NotificationServiceOptions.ExpirationMinutes over in the api-server process. Worth keeping the
+		/// two in step - they are one setting split across two services.
+		/// </summary>
+		public int QueueExpirationMinutes { get; set; } = 30;
+
 		/// <summary>Total send attempts (initial + retries) per session before giving up, in-memory, within one pass.</summary>
 		public int MaxAttemptsPerSession { get; set; } = 4;
 

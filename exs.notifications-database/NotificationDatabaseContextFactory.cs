@@ -1,7 +1,8 @@
+using System.Text.Json;
+using exs.dbContextCommons;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Migrations;
-using exs.dbContextCommons;
 
 namespace exs.notifications_database
 {
@@ -19,13 +20,12 @@ namespace exs.notifications_database
 	{
 		public NotificationDatabaseContext CreateDbContext(string[] args)
 		{
-			// `migrations add` never opens a connection - it only needs a parseable string to build the
-			// Npgsql provider - so the placeholder is enough to author migrations with no secrets and no
-			// database reachable. `database update`/`script --idempotent` against a real database require
-			// ConnectionStrings__MainDatabase in the environment; deliberately not defaulted to a live
-			// host, so an absent-minded `database update` can't touch shared infrastructure.
+			// Prefer a local_server.json connection string when present so `dotnet ef` can be run without
+			// manually exporting ConnectionStrings__MainDatabase. Keep the environment variable override
+			// for CI and explicit ad-hoc runs, then fall back to a harmless placeholder.
 			var connectionString =
-				Environment.GetEnvironmentVariable("ConnectionStrings__MainDatabase")
+				TryGetMainDatabaseConnectionStringFromLocalServerJson()
+				?? Environment.GetEnvironmentVariable("ConnectionStrings__MainDatabase")
 				?? "Host=localhost;Database=notifications-design-time;Username=postgres";
 
 			// No UseNetTopologySuite() here, unlike AddDbServices: nothing this context maps has a
@@ -39,6 +39,67 @@ namespace exs.notifications_database
 				.Options;
 
 			return new NotificationDatabaseContext(options);
+		}
+
+		private static string? TryGetMainDatabaseConnectionStringFromLocalServerJson()
+		{
+			foreach (var candidate in GetLocalServerJsonCandidates())
+			{
+				if (!File.Exists(candidate))
+				{
+					continue;
+				}
+
+				try
+				{
+					using var stream = File.OpenRead(candidate);
+					using var document = JsonDocument.Parse(stream);
+
+					if (document.RootElement.TryGetProperty("ConnectionStrings", out var connectionStrings) &&
+						connectionStrings.ValueKind == JsonValueKind.Object &&
+						connectionStrings.TryGetProperty("MainDatabase", out var mainDatabase) &&
+						mainDatabase.ValueKind == JsonValueKind.String)
+					{
+						var connectionString = mainDatabase.GetString();
+						if (!string.IsNullOrWhiteSpace(connectionString))
+						{
+							return connectionString;
+						}
+					}
+				}
+				catch (JsonException)
+				{
+					// Ignore malformed local config and keep looking/falling back.
+				}
+			}
+
+			return null;
+		}
+
+		private static IEnumerable<string> GetLocalServerJsonCandidates()
+		{
+			var baseDirectories = new[]
+			{
+				Directory.GetCurrentDirectory(),
+				AppContext.BaseDirectory,
+				Path.GetDirectoryName(typeof(NotificationDatabaseContextFactory).Assembly.Location) ?? string.Empty,
+			};
+
+			var relativePaths = new[]
+			{
+				Path.Combine("local_configs", "local_server.json"),
+				Path.Combine("exs.fcm-sender", "local_configs", "local_server.json"),
+				Path.Combine("..", "exs.fcm-sender", "local_configs", "local_server.json"),
+				Path.Combine("..", "..", "exs.fcm-sender", "local_configs", "local_server.json"),
+			};
+
+			foreach (var baseDirectory in baseDirectories)
+			{
+				foreach (var relativePath in relativePaths)
+				{
+					yield return Path.GetFullPath(Path.Combine(baseDirectory, relativePath));
+				}
+			}
 		}
 
 		/// <summary>

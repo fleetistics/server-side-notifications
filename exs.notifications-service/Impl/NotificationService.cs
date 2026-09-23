@@ -1,21 +1,27 @@
-﻿using exs.Database.Commons.Interfaces;
+using exs.Database.Commons.Interfaces;
 using exs.notifications_model.Notifications;
 using exs.notifications_service.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Threading.Channels;
 
 namespace exs.notifications_service.Impl
 {
 	public class NotificationService: BackgroundService, INotificationService
 	{
-		public NotificationService(IServiceScopeFactory scopeFactory, IEnumerable<ITransportNotificationProcessor> transportNotificationProcessors, ILogger<NotificationService> logger)
+		public NotificationService(IServiceScopeFactory scopeFactory, IEnumerable<ITransportNotificationProcessor> transportNotificationProcessors, IOptions<NotificationServiceOptions> options, ILogger<NotificationService> logger)
 		{
 			mScopeFactory = scopeFactory;
 			mTransportNotificationProcessors = transportNotificationProcessors;
 			mLogger = logger;
+
+			var serviceOptions = options.Value;
+			mExpirationInterval = TimeSpan.FromMinutes(serviceOptions.ExpirationMinutes);
+			mSweepInterval = TimeSpan.FromSeconds(serviceOptions.SweepIntervalSeconds);
+			mSweepGracePeriod = TimeSpan.FromSeconds(serviceOptions.SweepGracePeriodSeconds);
 
 			// Built here rather than in a field initializer because it needs mLogger. DropOldest means
 			// TryWrite always reports success even when it has just evicted something, so without the
@@ -31,7 +37,7 @@ namespace exs.notifications_service.Impl
 				},
 				dropped => mLogger.LogWarning(
 					"In-memory notification queue is full ({Capacity}) - dropped notification {NotificationId}. It stays Status=New; the periodic sweep will pick it up within {SweepInterval}.",
-					QUEUE_CAPACITY, dropped.NotificationId, SweepInterval));
+					QUEUE_CAPACITY, dropped.NotificationId, mSweepInterval));
 		}
 
 		public override async Task StopAsync(CancellationToken cancellationToken)
@@ -62,7 +68,7 @@ namespace exs.notifications_service.Impl
 			await Task.Yield(); // Ensure the method is asynchronous
 
 			await processNotificationsTable(stoppingToken);
-			var nextSweepDue = DateTime.UtcNow + SweepInterval;
+			var nextSweepDue = DateTime.UtcNow + mSweepInterval;
 
 			while (!stoppingToken.IsCancellationRequested)
 			{
@@ -90,7 +96,7 @@ namespace exs.notifications_service.Impl
 					if (DateTime.UtcNow >= nextSweepDue)
 					{
 						await processNotificationsTable(stoppingToken);
-						nextSweepDue = DateTime.UtcNow + SweepInterval;
+						nextSweepDue = DateTime.UtcNow + mSweepInterval;
 					}
 
 					// StopAsync completed the writer. Everything still buffered was just drained, and
@@ -151,10 +157,10 @@ namespace exs.notifications_service.Impl
 
 		/// <summary>
 		/// Reconciles against the notification table: anything still Status=New that the in-memory queue
-		/// did not deliver gets picked up here. Runs at startup and then every SweepInterval from the
-		/// reader loop, which is what makes the channel's DropOldest survivable - a dropped notification
-		/// is a delay of at most one interval rather than a permanent loss, and it is recovered well
-		/// inside the 30-minute EXPIRATION_INTERVAL instead of eventually being marked Expired unsent.
+		/// did not deliver gets picked up here. Runs at startup and then on the configured sweep interval
+		/// from the reader loop, which is what makes the channel's DropOldest survivable - a dropped
+		/// notification is a delay of at most one interval rather than a permanent loss, and is recovered
+		/// well inside the expiry window instead of eventually being marked Expired unsent.
 		/// It also picks up rows written by anything other than this process.
 		///
 		/// Internal rather than private, on the same reasoning as Worker.pollOnceAsync: tests can then
@@ -172,7 +178,7 @@ namespace exs.notifications_service.Impl
 			// practice; it is not a hard guarantee, since a batch that took longer than the grace period
 			// to process could leave an older item still queued. Only claiming rows at selection time
 			// (see the FCM worker's missing claim mechanism) would make it airtight.
-			var sweepHorizon = DateTime.UtcNow - SweepGracePeriod;
+			var sweepHorizon = DateTime.UtcNow - mSweepGracePeriod;
 			var notifications = await repository.GetQueryable<Notification>()
 				.Where(n => n.Status == NotificationStatus.New && n.Date < sweepHorizon)
 				.ToListAsync(stoppingToken);
@@ -183,7 +189,7 @@ namespace exs.notifications_service.Impl
 				return;
 			}
 			var now = DateTime.UtcNow;
-			var expiredNotifications = notifications.Where(n => n.Date < now - EXPIRATION_INTERVAL).ToList();
+			var expiredNotifications = notifications.Where(n => n.Date < now - mExpirationInterval).ToList();
 			if (expiredNotifications.Any())
 			{
 				foreach (var expiredNotification in expiredNotifications)
@@ -243,8 +249,22 @@ namespace exs.notifications_service.Impl
 			}
 			if (ids.Count > 0)
 			{
+				// Deliberately NOT passed stoppingToken, unlike every other await in this method. Do not
+				// "fix" it by adding one back.
+				//
+				// Every id in this list has already had its fcm_queue rows committed, so those pushes are
+				// going to be delivered whatever happens next. This statement is only the record of that.
+				// Cancelling it during shutdown leaves the notification at Status=New with its queue rows
+				// live, so the next startup sweep fans it out a second time and every recipient gets the
+				// push twice - and since the per-item catch above swallows the cancellation and lets the
+				// loop run on, that would happen to every notification in the batch that had succeeded,
+				// not just the one in flight. Every deployment is a shutdown, so this is routine rather
+				// than a corner case.
+				//
+				// The cost of finishing is one short indexed UPDATE holding shutdown up. Pinned by
+				// Sweep_ShutdownMidBatch_StillRecordsWhatAlreadySucceeded.
 				await repository.GetQueryable<Notification>(n => ids.Contains(n.Id))
-					.ExecuteUpdateAsync(s => s.SetProperty(n => n.Status, NotificationStatus.Processed), stoppingToken);
+					.ExecuteUpdateAsync(s => s.SetProperty(n => n.Status, NotificationStatus.Processed));
 			}
 		}
 
@@ -254,22 +274,13 @@ namespace exs.notifications_service.Impl
 			public List<int> UserIds { get; set; } = null!;
 		}
 
-		/// <summary>
-		/// How often the reader loop reconciles against the notification table. Internal and settable so
-		/// tests can drive a sweep without waiting the real interval; nothing in production changes it.
-		/// </summary>
-		internal TimeSpan SweepInterval { get; set; } = TimeSpan.FromMinutes(5);
-
-		/// <summary>
-		/// How recent a notification has to be for the sweep to leave it to the in-memory queue. Wide
-		/// enough to cover the gap between a row committing and the reader draining it (milliseconds in
-		/// practice), narrow enough that a genuinely stuck queue is still recovered promptly.
-		/// </summary>
-		internal TimeSpan SweepGracePeriod { get; set; } = TimeSpan.FromSeconds(30);
-
 		private readonly TimeSpan FAILURE_DELAY = TimeSpan.FromSeconds(5);
-		private readonly TimeSpan EXPIRATION_INTERVAL = TimeSpan.FromMinutes(30);
 		private const int QUEUE_CAPACITY = 100;
+
+		// All three from NotificationServiceOptions - see it for what each one trades off.
+		private readonly TimeSpan mExpirationInterval;
+		private readonly TimeSpan mSweepInterval;
+		private readonly TimeSpan mSweepGracePeriod;
 
 		private readonly Channel<NotificationQueueItem> mNotificationQueue;
 		private readonly IServiceScopeFactory mScopeFactory;

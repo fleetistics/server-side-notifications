@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using exs.notifications_database;
@@ -12,9 +13,11 @@ using exs.notifications_database;
 namespace exs.notifications_database.Migrations
 {
     [DbContext(typeof(NotificationDatabaseContext))]
-    partial class NotificationDatabaseContextModelSnapshot : ModelSnapshot
+    [Migration("20260921101326_MigrationName")]
+    partial class MigrationName
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

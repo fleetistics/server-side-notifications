@@ -299,6 +299,158 @@ namespace exs.fcm_sender.Tests
 				.SingleAsync(q => q.Id == queue.Id);
 		}
 
+		[Fact]
+		public async Task ProcessAsync_SuccessfulSend_RecordsTheProviderMessageIdAndNoErrorCode()
+		{
+			// The message id is the only handle for correlating this row with Firebase's own delivery
+			// reporting, which is where any "it never arrived" investigation has to start.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "token-1");
+			var stub = new StubFcmMessageSender(FcmSendResult.Ok("projects/x/messages/abc123"));
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			var sent = await db.Set<FcmSent>().SingleAsync();
+			sent.ProviderMessageId.ShouldBe("projects/x/messages/abc123");
+			sent.ErrorCode.ShouldBeNull();
+			sent.Error.ShouldBeNull();
+		}
+
+		[Fact]
+		public async Task ProcessAsync_FailedSend_RecordsTheMachineReadableCodeAlongsideThePinnedProse()
+		{
+			// Error is free-form English straight from Firebase and changes without notice, so it cannot
+			// be grouped on. ErrorCode is what a failure-rate breakdown or a token-cleanup job reads.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "token-1");
+			var stub = new StubFcmMessageSender(FcmSendResult.Failed(FcmSendOutcome.PermanentError, "Unregistered", "Requested entity was not found."));
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			var sent = await db.Set<FcmSent>().SingleAsync();
+			sent.ErrorCode.ShouldBe("Unregistered");
+			sent.Error.ShouldBe("Requested entity was not found.");
+			sent.ProviderMessageId.ShouldBeNull();
+		}
+
+		[Fact]
+		public async Task ProcessAsync_NoActiveSessions_RecordsTheInternalCodeNotJustProse()
+		{
+			// This row is not a Firebase failure at all - nothing was attempted. It still needs a code so
+			// that grouping the column gives a complete picture rather than a bucket of nulls.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+
+			await createProcessor(new StubFcmMessageSender()).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			var sent = await db.Set<FcmSent>().SingleAsync();
+			sent.ErrorCode.ShouldBe(FcmSentErrorCode.NoActiveSessions);
+			sent.ProviderMessageId.ShouldBeNull();
+		}
+
+		[Fact]
+		public async Task ProcessAsync_FcmRejectsTheToken_ClearsItOnThatSession()
+		{
+			// Without this the device is retried on every future notification forever - a wasted
+			// round-trip and a junk fcm_sent row each time - because nothing else ever removes a token
+			// that FCM has already said is dead.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			var sessionId = await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "dead-token");
+			var stub = new StubFcmMessageSender(FcmSendResult.Failed(FcmSendOutcome.PermanentError, "Unregistered", "app was uninstalled", tokenRejected: true));
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			var session = await db.Set<UserSession>().SingleAsync(s => s.Id == sessionId);
+			session.ClientInfo.FCM_FID.ShouldBeEmpty();
+			// The session itself stays active - the user has not been signed out, they just have no
+			// device registered for push any more.
+			session.StatusId.ShouldBe(UserSessionStatus.Active);
+			// The delivery record still describes what was attempted and against which token.
+			var sent = await db.Set<FcmSent>().SingleAsync();
+			sent.FcmToken.ShouldBe("dead-token");
+			sent.Error.ShouldBe("app was uninstalled");
+		}
+
+		[Fact]
+		public async Task ProcessAsync_PermanentFailureThatIsNotTheTokensFault_LeavesTheTokenAlone()
+		{
+			// InvalidArgument and ThirdPartyAuthError are permanent but say nothing about the token -
+			// they are a malformed message and a broken APNs credential respectively. Both would fail
+			// every send at once, so reaping on them would empty the token of every active session in a
+			// single poll pass.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			var sessionId = await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "good-token");
+			var stub = new StubFcmMessageSender(FcmSendResult.Failed(FcmSendOutcome.PermanentError, "InvalidArgument", "message payload too large"));
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			(await db.Set<UserSession>().SingleAsync(s => s.Id == sessionId)).ClientInfo.FCM_FID.ShouldBe("good-token");
+		}
+
+		[Fact]
+		public async Task ProcessAsync_SuccessfulSend_LeavesTheTokenAlone()
+		{
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			var sessionId = await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "good-token");
+			var stub = new StubFcmMessageSender(FcmSendResult.Ok("msg-1"));
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			(await db.Set<UserSession>().SingleAsync(s => s.Id == sessionId)).ClientInfo.FCM_FID.ShouldBe("good-token");
+		}
+
+		[Fact]
+		public async Task ProcessAsync_SessionRegisteredAFreshTokenMidSend_DoesNotClearIt()
+		{
+			// The race the update guards against. Sessions are read at the top of ProcessAsync and queue
+			// rows for the same user run in parallel scopes, so by the time a rejection comes back the
+			// client may have reinstalled and registered a new token. Clearing by session id alone would
+			// throw that new token away; matching on the rejected value too means the update simply
+			// matches nothing.
+			var queueItem = await seedNotificationAndQueueItemAsync(userId: 1);
+			var sessionId = await seedUserSessionAsync(userId: 1, UserSessionStatus.Active, ClientDevicePlatform.Ios, "stale-token");
+			var stub = new RegistersNewTokenMidSendFcmMessageSender(this, sessionId, "freshly-registered-token");
+
+			await createProcessor(stub).ProcessAsync(queueItem, CancellationToken.None);
+
+			await using var db = createContext();
+			(await db.Set<UserSession>().SingleAsync(s => s.Id == sessionId)).ClientInfo.FCM_FID.ShouldBe("freshly-registered-token");
+		}
+
+		/// <summary>
+		/// Rewrites the session's token as part of responding, standing in for a client that
+		/// re-registered between ProcessAsync reading its sessions and the rejection coming back.
+		/// </summary>
+		private sealed class RegistersNewTokenMidSendFcmMessageSender : IFcmMessageSender
+		{
+			public RegistersNewTokenMidSendFcmMessageSender(NotificationQueueProcessorTests owner, int sessionId, string newToken)
+			{
+				mOwner = owner;
+				mSessionId = sessionId;
+				mNewToken = newToken;
+			}
+
+			public async Task<FcmSendResult> SendAsync(string token, short platformId, string title, string body, short typeId, int? entityId, string payload, CancellationToken cancellationToken)
+			{
+				await using (var context = mOwner.createContext())
+				{
+					var session = await context.Set<UserSession>().SingleAsync(s => s.Id == mSessionId, cancellationToken);
+					session.ClientInfo.FCM_FID = mNewToken;
+					await context.SaveChangesAsync(cancellationToken);
+				}
+				return FcmSendResult.Failed(FcmSendOutcome.PermanentError, "Unregistered", "the old token is dead", tokenRejected: true);
+			}
+
+			private readonly NotificationQueueProcessorTests mOwner;
+			private readonly int mSessionId;
+			private readonly string mNewToken;
+		}
+
 		private async Task<int> seedUserSessionAsync(int userId, short statusId, short platformId, string fcmToken)
 		{
 			await using var context = createContext();

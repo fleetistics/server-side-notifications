@@ -7,6 +7,7 @@
   <Project Path="exs.notifications-database/exs.notifications-database.csproj" />
   <Project Path="exs.notifications-model/exs.notifications-model.csproj" />
   <Project Path="exs.notifications-service/exs.notifications-service.csproj" />
+  <Project Path="tools/exs.notifications-sender-test-app/exs.notifications-sender-test-app.csproj" />
   <Project Path="tests/exs.fcm-sender.Tests/exs.fcm-sender.Tests.csproj" />
   <Project Path="tests/exs.notifications-database.Tests/exs.notifications-database.Tests.csproj" />
   <Project Path="tests/exs.notifications-service.Tests/exs.notifications-service.Tests.csproj" />

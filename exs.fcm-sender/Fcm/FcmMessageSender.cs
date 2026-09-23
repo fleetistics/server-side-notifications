@@ -29,7 +29,13 @@ namespace exs.fcm_sender.Fcm
 			}
 			catch (FirebaseMessagingException ex)
 			{
-				return FcmSendResult.Failed(Classify(ex.MessagingErrorCode), ex.MessagingErrorCode?.ToString() ?? ex.ErrorCode.ToString(), ex.Message);
+				mLogger.LogWarning(ex, "FCM send failed for token {Token} (platform {PlatformId}, type {TypeId}, entity {EntityId}): {ErrorCode} - {ErrorMessage}",
+					token, platformId, typeId, entityId, ex.MessagingErrorCode?.ToString() ?? ex.ErrorCode.ToString(), ex.Message);
+				return FcmSendResult.Failed(
+					Classify(ex.MessagingErrorCode),
+					ex.MessagingErrorCode?.ToString() ?? ex.ErrorCode.ToString(),
+					ex.Message,
+					IsTokenRejected(ex.MessagingErrorCode));
 			}
 		}
 
@@ -46,6 +52,19 @@ namespace exs.fcm_sender.Fcm
 			_ => FcmSendOutcome.TransientError,
 		};
 
+		// Deliberately a strict subset of the permanent codes above, and it must stay that way.
+		//
+		//   Unregistered      the app was uninstalled or the token rotated - it is gone for good.
+		//   SenderIdMismatch  the token belongs to a different Firebase project, so it is dead to us.
+		//
+		// The other two permanent codes say nothing about the token and must not reach here.
+		// InvalidArgument is usually a malformed *message*, and ThirdPartyAuthError is our own APNs
+		// credential being broken - both are global faults that would hit every send at once, so
+		// treating them as dead tokens would wipe the registration token of every active session in a
+		// single poll pass, with nothing to restore them from.
+		internal static bool IsTokenRejected(MessagingErrorCode? code) =>
+			code is MessagingErrorCode.Unregistered or MessagingErrorCode.SenderIdMismatch;
+
 		// Split out from SendAsync so message-shape logic (platform-conditional config, badge/sound
 		// wiring, payload flattening) is testable without a real FirebaseApp/network call - only this
 		// method's caller (SendAsync) touches mMessaging.
@@ -57,6 +76,7 @@ namespace exs.fcm_sender.Fcm
 		internal static Message BuildMessage(string token, short platformId, string title, string body, short typeId, int? entityId, string payload, ILogger logger)
 		{
 			var data = BuildData(typeId, entityId, payload, logger);
+			var isBackground = string.IsNullOrEmpty(title) && string.IsNullOrEmpty(body);
 
 			// Payload can optionally carry "badge" (iOS badge count - Aps.Badge left unset/unchanged
 			// when absent, since 0 is a meaningful "clear the badge" value distinct from "not sent")
@@ -72,11 +92,12 @@ namespace exs.fcm_sender.Fcm
 			return new Message
 			{
 				Token = token,
-				Notification = new FirebaseAdmin.Messaging.Notification
+				//Fid = token,
+				Notification = !isBackground ? new FirebaseAdmin.Messaging.Notification
 				{
 					Title = title,
 					Body = body,
-				},
+				} : null,
 				Data = data,
 				// Built per the session's actual platform rather than sending both unconditionally -
 				// ClientDevicePlatform also has Windows, so "just send everything, FCM ignores the
@@ -88,7 +109,7 @@ namespace exs.fcm_sender.Fcm
 					? new AndroidConfig
 					{
 						Priority = Priority.High,
-						Notification = !string.IsNullOrEmpty(androidSound)
+						Notification = !isBackground && !string.IsNullOrEmpty(androidSound)
 							? new AndroidNotification { Sound = androidSound }
 							: null,
 					}
@@ -96,20 +117,27 @@ namespace exs.fcm_sender.Fcm
 				Apns = platformId == ClientDevicePlatform.Ios
 					? new ApnsConfig
 					{
-						Headers = new Dictionary<string, string> { ["apns-priority"] = "10" },
+						Headers = isBackground
+							? new Dictionary<string, string>
+							{
+								["apns-push-type"] = "background",
+								["apns-priority"] = "5",
+							}
+							: new Dictionary<string, string> { ["apns-priority"] = "10" },
 						Aps = new Aps
 						{
 							// "default" plays the system notification sound - APNs requires some
 							// sound value to actually play anything, so this is the fallback rather
 							// than leaving Sound unset, unlike Android where no sound resource means
 							// no custom Notification block at all.
-							Sound = !string.IsNullOrEmpty(iosSound) ? iosSound : "default",
-							Badge = badge,
-							Alert = new ApsAlert
+							ContentAvailable = isBackground,
+							Sound = !isBackground ? (!string.IsNullOrEmpty(iosSound) ? iosSound : "default") : null,
+							Badge = !isBackground ? badge : null,
+							Alert = !isBackground ? new ApsAlert
 							{
 								Title = title,
 								Body = body,
-							},
+							} : null,
 						},
 					}
 					: null,

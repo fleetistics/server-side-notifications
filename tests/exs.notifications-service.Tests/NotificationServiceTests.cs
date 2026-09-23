@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Shouldly;
 
 namespace exs.notifications_service.Tests
@@ -77,6 +78,36 @@ namespace exs.notifications_service.Tests
 		}
 
 		[Fact]
+		public async Task Sweep_ExpiryWindowComesFromConfiguration()
+		{
+			// The window used to be a hardcoded 30 minutes here and another hardcoded 30 minutes in the
+			// sender's Worker, in a different assembly and a different process. This notification is an
+			// hour old, so it would be expired unsent under the default and must not be under a wider one.
+			await seedNotificationAsync("Old", [1], ageMinutes: 60);
+			var transportProcessor = new RecordingTransportProcessor();
+			var service = createService(new NotificationServiceOptions { ExpirationMinutes = 24 * 60 }, transportProcessor);
+
+			await service.processNotificationsTable(CancellationToken.None);
+
+			transportProcessor.Calls.Single().UserIds.ShouldBe([1]);
+			(await mProbe.Set<Notification>().AsNoTracking().SingleAsync()).Status.ShouldBe(NotificationStatus.Processed);
+		}
+
+		[Fact]
+		public async Task Sweep_ExpiryWindowCanBeNarrowed()
+		{
+			// The other direction, so the test above cannot pass just by the expiry never firing.
+			await seedNotificationAsync("Recent", [1], ageMinutes: 5);
+			var transportProcessor = new RecordingTransportProcessor();
+			var service = createService(new NotificationServiceOptions { ExpirationMinutes = 1 }, transportProcessor);
+
+			await service.processNotificationsTable(CancellationToken.None);
+
+			transportProcessor.Calls.ShouldBeEmpty();
+			(await mProbe.Set<Notification>().AsNoTracking().SingleAsync()).Status.ShouldBe(NotificationStatus.Expired);
+		}
+
+		[Fact]
 		public async Task Sweep_NoFcmTransportProcessorRegistered_LeavesNotificationUnprocessed()
 		{
 			await seedNotificationAsync("Orphan", [1], ageMinutes: 1);
@@ -124,6 +155,35 @@ namespace exs.notifications_service.Tests
 		}
 
 		[Fact]
+		public async Task Sweep_ShutdownMidBatch_StillRecordsWhatAlreadySucceeded()
+		{
+			// Guards the missing cancellation token on the bulk status update. Status is written once per
+			// batch, after the loop, while fcm_queue rows are committed per notification inside it - so a
+			// shutdown between the two leaves a notification at New with its queue rows already live, and
+			// the next sweep fans it out again for a duplicate push to every recipient. Passing the
+			// stopping token to that update is what makes this happen, which is why it does not get one.
+			//
+			// The first notification here is processed and committed normally; the transport then cancels
+			// as the second begins, so the second fails and the batch reaches the status update with the
+			// token already cancelled.
+			await seedNotificationAsync("First", [1], ageMinutes: 2);
+			await seedNotificationAsync("Second", [2], ageMinutes: 1);
+			using var shutdown = new CancellationTokenSource();
+			var transportProcessor = new RecordingTransportProcessor { CancelAtCall = shutdown, CancelAtCallNumber = 2 };
+
+			await createService(transportProcessor).processNotificationsTable(shutdown.Token);
+
+			transportProcessor.Calls.Count.ShouldBe(2);
+			var committedId = transportProcessor.Calls[0].NotificationId;
+			var notifications = await mProbe.Set<Notification>().AsNoTracking().ToListAsync();
+
+			// The assertion that matters: this one's fcm_queue rows were committed before the shutdown, so
+			// the push is happening whatever else does. If the status update honoured the cancelled token
+			// this would still read New, and the next sweep would send it all over again.
+			notifications.Single(n => n.Id == committedId).Status.ShouldBe(NotificationStatus.Processed);
+		}
+
+		[Fact]
 		public async Task Sweep_PicksUpANotificationThatNeverWentThroughTheQueue()
 		{
 			// The reason the sweep exists. The in-memory queue is bounded with DropOldest, so a burst can
@@ -149,8 +209,8 @@ namespace exs.notifications_service.Tests
 			// push, so anything younger than the grace period is left alone.
 			await seedNotificationAsync("JustCommitted", [1], ageMinutes: 0);
 			var transportProcessor = new RecordingTransportProcessor();
-			var service = createService(transportProcessor);
-			service.SweepGracePeriod = TimeSpan.FromMinutes(10); // nothing in this test is old enough to sweep
+			// Nothing in this test is old enough to sweep.
+			var service = createService(new NotificationServiceOptions { SweepGracePeriodSeconds = 600 }, transportProcessor);
 
 			await service.processNotificationsTable(CancellationToken.None);
 
@@ -189,9 +249,11 @@ namespace exs.notifications_service.Tests
 			// once at startup. That is what turns a dropped queue entry into a delay of one interval
 			// rather than a loss that survives until the next deployment.
 			var transportProcessor = new RecordingTransportProcessor();
-			var service = createService(transportProcessor);
-			service.SweepInterval = TimeSpan.FromMilliseconds(100);
-			service.SweepGracePeriod = TimeSpan.Zero;
+			// One second is the shortest the option expresses, which is fine - the point is that a second
+			// sweep happens at all, not how soon.
+			var service = createService(
+				new NotificationServiceOptions { SweepIntervalSeconds = 1, SweepGracePeriodSeconds = 0 },
+				transportProcessor);
 
 			await service.StartAsync(CancellationToken.None);
 			// Let the startup pass finish against an empty table first, so anything picked up after this
@@ -258,7 +320,10 @@ namespace exs.notifications_service.Tests
 		}
 
 		private NotificationService createService(params ITransportNotificationProcessor[] processors) =>
-			new(createScopeFactory(), processors, NullLogger<NotificationService>.Instance);
+			createService(new NotificationServiceOptions(), processors);
+
+		private NotificationService createService(NotificationServiceOptions options, params ITransportNotificationProcessor[] processors) =>
+			new(createScopeFactory(), processors, Options.Create(options), NullLogger<NotificationService>.Instance);
 
 		private IServiceScopeFactory createScopeFactory()
 		{
@@ -315,9 +380,21 @@ namespace exs.notifications_service.Tests
 			/// <summary>When set, every call records itself and then throws it.</summary>
 			public Exception? ThrowAfterRecording { get; set; }
 
+			/// <summary>
+			/// When set, this source is cancelled once <see cref="CancelAtCallNumber"/> calls have been
+			/// made - standing in for a host shutdown landing partway through a batch.
+			/// </summary>
+			public CancellationTokenSource? CancelAtCall { get; set; }
+
+			public int CancelAtCallNumber { get; set; }
+
 			public Task ProcessNotificationAsync(IRepository repository, int notificationId, List<int> usersIds, CancellationToken cancellationToken)
 			{
 				Calls.Add((notificationId, usersIds));
+				if (CancelAtCall is not null && Calls.Count == CancelAtCallNumber)
+				{
+					CancelAtCall.Cancel();
+				}
 				return ThrowAfterRecording is null ? Task.CompletedTask : Task.FromException(ThrowAfterRecording);
 			}
 		}

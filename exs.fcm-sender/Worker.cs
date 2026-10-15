@@ -21,7 +21,9 @@ namespace exs.fcm_sender
 		}
 
 		protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-		{
+		{	
+			Console.WriteLine($"CON: FCM sender starting: batch size {mOptions.BatchSize}, max concurrency {mOptions.MaxConcurrency}, poll interval {mOptions.PollIntervalSeconds}s");
+
 			mLogger.LogInformation(
 				"FCM sender starting: batch size {BatchSize}, max concurrency {MaxConcurrency}, poll interval {PollIntervalSeconds}s",
 				mOptions.BatchSize, mOptions.MaxConcurrency, mOptions.PollIntervalSeconds);

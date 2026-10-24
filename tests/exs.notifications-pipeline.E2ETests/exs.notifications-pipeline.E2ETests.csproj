@@ -16,12 +16,18 @@
     <ProjectReference Include="..\..\exs.notifications-service\exs.notifications-service.csproj" />
     <ProjectReference Include="..\..\exs.notifications-database\exs.notifications-database.csproj" />
     <ProjectReference Include="..\..\exs.fcm-sender\exs.fcm-sender.csproj" />
+    <!-- The standalone sender app the host talks to over HTTP in the sender-mode tests, run in-process. -->
+    <ProjectReference Include="..\..\..\server-side-senders\exs.sender-fcm\exs.sender-fcm.csproj" />
+    <ProjectReference Include="..\..\..\server-side-senders\exs.sender-email\exs.sender-email.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageReference Include="Shouldly" Version="4.3.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">

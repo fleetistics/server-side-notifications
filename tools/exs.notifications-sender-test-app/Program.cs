@@ -24,7 +24,7 @@ try
 		var sender = scope.ServiceProvider.GetRequiredService<INotificationSender>();
 		var repository = scope.ServiceProvider.GetRequiredService<IRepository>();
 
-		sender.CreateNotification(
+		sender.CreateMobileNotification(
 			repository,
 			notificationType: NotificationType.Generic,
 			entityId: 95,

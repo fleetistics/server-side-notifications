@@ -4,9 +4,11 @@ using exs.notifications_database;
 using exs.notifications_model.Notifications;
 using exs.notifications_service.Impl;
 using exs.notifications_service.Interfaces;
+using exs.notifications_service.Tests.Sender.Support;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Shouldly;
@@ -218,6 +220,108 @@ namespace exs.notifications_service.Tests
 			(await mProbe.Set<Notification>().AsNoTracking().SingleAsync()).Status.ShouldBe(NotificationStatus.New);
 		}
 
+		// --- transport routing -------------------------------------------------------------------
+		// A notification goes out on the one transport it was created for. The sweep reads that from the row.
+
+		[Fact]
+		public async Task Sweep_GivesEachNotificationOnlyToTheProcessorsOfItsOwnTransport()
+		{
+			var pushId = await seedNotificationAsync("Push", [1], ageMinutes: 2, NotificationTransportType.FCM);
+			var mailId = await seedNotificationAsync("Mail", [2], ageMinutes: 1, NotificationTransportType.Email);
+			var push = new RecordingTransportProcessor();
+			var mail = new RecordingTransportProcessor(NotificationTransportType.Email);
+
+			await createService(push, mail).processNotificationsTable(CancellationToken.None);
+
+			push.Calls.Single().NotificationId.ShouldBe(pushId);
+			push.Calls.Single().UserIds.ShouldBe([1]);
+			mail.Calls.Single().NotificationId.ShouldBe(mailId);
+			mail.Calls.Single().UserIds.ShouldBe([2]);
+			(await mProbe.Set<Notification>().AsNoTracking().ToListAsync()).ShouldAllBe(n => n.Status == NotificationStatus.Processed);
+		}
+
+		[Fact]
+		public async Task Sweep_ARowWrittenWithoutATransportType_ReadsAsPush()
+		{
+			// What a row that predates the column, or any writer that never heard of it, looks like: the column is
+			// left out of the INSERT altogether, so its database default is what the row gets.
+			await using (var context = createContext())
+			{
+				await context.Database.ExecuteSqlRawAsync(
+					"INSERT INTO notification (\"Date\", \"TypeId\", \"Title\", \"Body\", \"Status\") VALUES ({0}, 1, 'Legacy', 'Body', 0)", DateTime.UtcNow.AddMinutes(-1));
+				var id = await context.Set<Notification>().Select(n => n.Id).SingleAsync();
+				context.Add(new NotificationToUser { NotificationId = id, UserId = 4 });
+				await context.SaveChangesAsync();
+			}
+			var push = new RecordingTransportProcessor();
+			var mail = new RecordingTransportProcessor(NotificationTransportType.Email);
+
+			await createService(push, mail).processNotificationsTable(CancellationToken.None);
+
+			(await mProbe.Set<Notification>().AsNoTracking().SingleAsync()).TransportType.ShouldBe(NotificationTransportType.FCM);
+			push.Calls.Single().UserIds.ShouldBe([4]);
+			mail.Calls.ShouldBeEmpty();
+		}
+
+		[Fact]
+		public async Task Sweep_ANotificationWhoseTransportHasNoProcessor_IsExpiredWithAWarning_AndTheOthersAreStillProcessed()
+		{
+			var mailId = await seedNotificationAsync("Mail", [1], ageMinutes: 2, NotificationTransportType.Email);
+			await seedNotificationAsync("Push", [2], ageMinutes: 1, NotificationTransportType.FCM);
+			var push = new RecordingTransportProcessor();
+			var log = new ListLogger<NotificationService>();
+			var service = new NotificationService(createScopeFactory(), [push], Options.Create(new NotificationServiceOptions()), log);
+
+			await service.processNotificationsTable(CancellationToken.None);
+
+			var notifications = await mProbe.Set<Notification>().AsNoTracking().ToListAsync();
+			notifications.Single(n => n.Id == mailId).Status.ShouldBe(NotificationStatus.Expired);
+			notifications.Single(n => n.Id != mailId).Status.ShouldBe(NotificationStatus.Processed);
+			push.Calls.Count.ShouldBe(1); // the email notification was not pushed instead
+			var warning = log.Entries.Single(e => e.Level == LogLevel.Warning);
+			warning.Message.ShouldContain($"Notification {mailId} ");
+			warning.Message.ShouldContain("Email");
+		}
+
+		[Fact]
+		public async Task Sweep_AnExpiredUnroutableNotification_IsNotFoundAgainByTheNextSweep()
+		{
+			await seedNotificationAsync("Mail", [1], ageMinutes: 1, NotificationTransportType.Email);
+			var log = new ListLogger<NotificationService>();
+			var service = new NotificationService(createScopeFactory(), [new RecordingTransportProcessor()], Options.Create(new NotificationServiceOptions()), log);
+
+			await service.processNotificationsTable(CancellationToken.None);
+			await service.processNotificationsTable(CancellationToken.None);
+
+			log.Entries.Count(e => e.Level == LogLevel.Warning).ShouldBe(1); // said once, not on every sweep until it would have expired
+		}
+
+		[Fact]
+		public async Task EnqueueNotification_WhileRunning_GivesItOnlyToTheProcessorsOfTheGivenTransport()
+		{
+			var push = new RecordingTransportProcessor();
+			var mail = new RecordingTransportProcessor(NotificationTransportType.Email);
+			var service = createService(push, mail);
+			await service.StartAsync(CancellationToken.None);
+			await Task.Delay(150);
+
+			var id = await seedNotificationAsync("Live", [5], ageMinutes: 0, NotificationTransportType.Email);
+			service.EnqueueNotification(id, [5], NotificationTransportType.Email).ShouldBeTrue();
+
+			try
+			{
+				await waitUntilAsync(() => mail.Calls.Count >= 1);
+				await Task.Delay(100);
+			}
+			finally
+			{
+				await service.StopAsync(CancellationToken.None);
+			}
+
+			mail.Calls.Single().NotificationId.ShouldBe(id);
+			push.Calls.ShouldBeEmpty();
+		}
+
 		// --- loop wiring -----------------------------------------------------------------------
 		// These start the real BackgroundService, and so wait on the in-memory recorder rather than
 		// polling the database, leaving the shared connection to the loop alone.
@@ -290,7 +394,7 @@ namespace exs.notifications_service.Tests
 				seed.Add(notification);
 				await seed.SaveChangesAsync();
 			}
-			service.EnqueueNotification(notification.Id, [5]).ShouldBeTrue();
+			service.EnqueueNotification(notification.Id, [5], NotificationTransportType.FCM).ShouldBeTrue();
 
 			try
 			{
@@ -328,11 +432,7 @@ namespace exs.notifications_service.Tests
 		private IServiceScopeFactory createScopeFactory()
 		{
 			var services = new ServiceCollection();
-			// See WorkerTests for why this must match createContext() exactly rather than going
-			// through AddDbContext: NotificationsModelBuilder/CommonModelBuilder memoize "model already
-			// built" behind a process-wide static bool, keyed to nothing - a differently-constructed
-			// DbContextOptions is a different EF model cache key and would find that guard already
-			// tripped, producing a context with an empty model.
+			// Matches createContext() exactly rather than going through AddDbContext; see WorkerTests.
 			services.AddScoped(_ => createContext());
 			services.AddScoped<IRepository>(sp => new EntityFrameworkRepository<NotificationDatabaseContext>(sp.GetRequiredService<NotificationDatabaseContext>()));
 			return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
@@ -341,7 +441,7 @@ namespace exs.notifications_service.Tests
 		private NotificationDatabaseContext createContext() =>
 			new(new DbContextOptionsBuilder<NotificationDatabaseContext>().UseSqlite(mConnection).Options);
 
-		private async Task seedNotificationAsync(string title, int[] userIds, int ageMinutes)
+		private async Task<int> seedNotificationAsync(string title, int[] userIds, int ageMinutes, byte transportType = NotificationTransportType.FCM)
 		{
 			await using var context = createContext();
 			var notification = new Notification
@@ -351,6 +451,7 @@ namespace exs.notifications_service.Tests
 				Title = title,
 				Body = "Body",
 				Payload = "",
+				TransportType = transportType,
 			};
 			context.Add(notification);
 			await context.SaveChangesAsync();
@@ -360,6 +461,7 @@ namespace exs.notifications_service.Tests
 				context.Add(new NotificationToUser { NotificationId = notification.Id, UserId = userId });
 			}
 			await context.SaveChangesAsync();
+			return notification.Id;
 		}
 
 		private static async Task waitUntilAsync(Func<bool> condition, int timeoutMs = 5000)
@@ -374,7 +476,9 @@ namespace exs.notifications_service.Tests
 
 		private sealed class RecordingTransportProcessor : ITransportNotificationProcessor
 		{
-			public byte TransportType => NotificationTransportType.FCM;
+			public RecordingTransportProcessor(byte transportType = NotificationTransportType.FCM) => TransportType = transportType;
+
+			public byte TransportType { get; }
 			public List<(int NotificationId, List<int> UserIds)> Calls { get; } = [];
 
 			/// <summary>When set, every call records itself and then throws it.</summary>

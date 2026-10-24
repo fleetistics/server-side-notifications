@@ -10,12 +10,21 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\exs.notifications-database\exs.notifications-database.csproj" />
+    <!-- For SenderMode/: the host-side relay, puller and hooks run against the same real PostgreSQL as the migrations. -->
+    <ProjectReference Include="..\..\exs.notifications-service\exs.notifications-service.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The scripts that are run by hand in production, so MigrationTests can run them against a real PostgreSQL. -->
+    <None Include="..\..\exs.notifications-database\Scripts\*.sql" Link="Scripts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageReference Include="Shouldly" Version="4.3.0" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.1.0" />
+    <!-- Testcontainers pulls in SSH.NET 2024.1.0, which has two high-severity advisories in ScpClient (fixed in 2026.0.0). Nothing here uses SSH or SCP; this only overrides the version. -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

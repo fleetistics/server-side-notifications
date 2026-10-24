@@ -20,7 +20,7 @@ using Shouldly;
 namespace exs.notifications_pipeline.E2ETests
 {
 	/// <summary>
-	/// Drives the whole pipeline for real: NotificationSender.CreateNotification -> NotificationService
+	/// Drives the whole pipeline for real: NotificationSender.CreateMobileNotification -> NotificationService
 	/// (background fan-out) -> FcmNotificationsProcessor (creates FcmQueue rows) -> Worker.pollOnceAsync
 	/// (drains the queue) -> NotificationQueueProcessor (resolves sessions, sends, records FcmSent).
 	/// Everything is the real production DI wiring for exs.notifications-service
@@ -84,7 +84,7 @@ namespace exs.notifications_pipeline.E2ETests
 			{
 				var repository = scope.ServiceProvider.GetRequiredService<IRepository>();
 				var sender = scope.ServiceProvider.GetRequiredService<INotificationSender>();
-				sender.CreateNotification(repository, notificationType: 1, entityId: 123, "Title", "Body", """{"count":1}""", [7]);
+				sender.CreateMobileNotification(repository, notificationType: 1, entityId: 123, "Title", "Body", """{"count":1}""", [7]);
 				await repository.SaveAsync();
 			} // scope disposal here triggers NotificationSender.Dispose() -> EnqueueNotification
 
@@ -130,7 +130,7 @@ namespace exs.notifications_pipeline.E2ETests
 			{
 				var repository = scope.ServiceProvider.GetRequiredService<IRepository>();
 				var sender = scope.ServiceProvider.GetRequiredService<INotificationSender>();
-				sender.CreateNotification(repository, notificationType: 1, entityId: 0, "Title", "Body", "", [99]);
+				sender.CreateMobileNotification(repository, notificationType: 1, entityId: 0, "Title", "Body", "", [99]);
 				await repository.SaveAsync();
 			}
 

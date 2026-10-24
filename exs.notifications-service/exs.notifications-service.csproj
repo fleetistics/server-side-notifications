@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
     <!-- OptionsBuilder.Bind(IConfiguration), for binding NotificationServiceOptions in DiHelper. -->
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
@@ -17,6 +18,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\server-side-commons\exs.databaseCommons\exs.databaseCommons.csproj" />
     <ProjectReference Include="..\exs.notifications-model\exs.notifications-model.csproj" />
+    <!-- The wire contract shared with the standalone senders (envelope, bodies, result events). -->
+    <ProjectReference Include="..\..\server-side-senders\exs.notifications-contracts\exs.notifications-contracts.csproj" />
   </ItemGroup>
 
 </Project>

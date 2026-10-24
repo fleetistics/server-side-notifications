@@ -157,6 +157,11 @@ namespace exs.notifications_database.Migrations
                     b.Property<string>("Title")
                         .HasColumnType("text");
 
+                    b.Property<byte>("TransportType")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("smallint")
+                        .HasDefaultValue((byte)1);
+
                     b.Property<short>("TypeId")
                         .HasColumnType("smallint");
 
@@ -205,6 +210,123 @@ namespace exs.notifications_database.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("notification_type", (string)null);
+                });
+
+            modelBuilder.Entity("exs.notifications_model.Outbox.OutboxMessage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Account")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int?>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("DestinationInvalid")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Envelope")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("ErrorKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("MessageId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("NotificationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProviderMessageId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Ref")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long?>("ResultId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ResultStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("SubmitError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("SubmittedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompletedAt")
+                        .HasDatabaseName("IX_notification_outbox_CompletedAt");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_notification_outbox_pending")
+                        .HasFilter("\"State\" = 0");
+
+                    b.HasIndex("MessageId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_notification_outbox_MessageId");
+
+                    b.HasIndex("NotificationId", "UserId")
+                        .HasDatabaseName("IX_notification_outbox_NotificationId_UserId");
+
+                    b.ToTable("notification_outbox", (string)null);
+                });
+
+            modelBuilder.Entity("exs.notifications_model.Outbox.TransportCursor", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("Position")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("notification_transport_cursor", (string)null);
                 });
 
             modelBuilder.Entity("exs.notifications_model.Transports.FcmQueue", b =>
@@ -284,6 +406,16 @@ namespace exs.notifications_database.Migrations
                         .HasForeignKey("NotificationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Notification");
+                });
+
+            modelBuilder.Entity("exs.notifications_model.Outbox.OutboxMessage", b =>
+                {
+                    b.HasOne("exs.notifications_model.Notifications.Notification", "Notification")
+                        .WithMany()
+                        .HasForeignKey("NotificationId")
+                        .OnDelete(DeleteBehavior.Cascade);
 
                     b.Navigation("Notification");
                 });

@@ -1,8 +1,11 @@
 using exs.modelCommons.AppStructure;
 using exs.modelCommons.UserManagement;
 using exs.notifications_model.Notifications;
+using exs.notifications_model.Outbox;
 using exs.notifications_model.Transports;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 using Shouldly;
 using Testcontainers.PostgreSql;
@@ -101,6 +104,8 @@ namespace exs.notifications_database.Tests
 			applied.ShouldContain(m => m.EndsWith("InitialFcmTransport"));
 			applied.ShouldContain(m => m.EndsWith("AddNotificationPipelineIndexes"));
 			applied.ShouldContain(m => m.EndsWith("AddFcmSentErrorCodeAndProviderMessageId"));
+			applied.ShouldContain(m => m.EndsWith("AddNotificationOutbox"));
+			applied.ShouldContain(m => m.EndsWith("AddNotificationTransportType"));
 			(await context.Database.GetPendingMigrationsAsync()).ShouldBeEmpty();
 		}
 
@@ -135,7 +140,9 @@ namespace exs.notifications_database.Tests
 
 			var rows = await scalarsAsync("""SELECT "MigrationId" FROM "__EFMigrationsHistory_Notifications" ORDER BY 1""");
 
-			rows.Count.ShouldBe(3);
+			// Every migration this assembly contains, not a hardcoded number that goes stale with each new one.
+			rows.ShouldBe(context.Database.GetMigrations().OrderBy(m => m, StringComparer.Ordinal).ToList());
+			rows.Count.ShouldBeGreaterThanOrEqualTo(6);
 			(await tableExistsAsync("__EFMigrationsHistory")).ShouldBeFalse();
 		}
 
@@ -280,8 +287,210 @@ namespace exs.notifications_database.Tests
 			reloaded.StatusId.ShouldBe(UserSessionStatus.Active); // the session itself is untouched
 		}
 
+		[Fact]
+		public async Task OutboxMigration_CreatesTheOutboxAndTheCursorTable_WithTheIndexesTheRelayDependsOn()
+		{
+			await using var context = createContext();
+			await context.Database.MigrateAsync();
+
+			var outbox = await columnsOfAsync("notification_outbox");
+			foreach (var column in new[] { "Id", "MessageId", "NotificationId", "UserId", "Channel", "Account", "Ref", "Envelope", "CreatedAt", "ExpiresAt", "State",
+				"SubmittedAt", "SubmitError", "ResultId", "ResultStatus", "ErrorKind", "ErrorCode", "ErrorMessage", "ProviderMessageId", "DestinationInvalid", "Attempts", "CompletedAt" })
+			{
+				outbox.ShouldContain(column);
+			}
+			(await columnsOfAsync("notification_transport_cursor")).ShouldBe(["Name", "Position", "UpdatedAt"]);
+
+			var indexes = await scalarsAsync("""
+				SELECT indexname || ' :: ' || indexdef FROM pg_indexes WHERE tablename = 'notification_outbox' ORDER BY 1
+				""");
+
+			// The sender deduplicates on the message id and the puller finds a row by it, so it must be unique.
+			indexes.Single(i => i.StartsWith("UX_notification_outbox_MessageId :: ")).ShouldContain("UNIQUE");
+
+			// Filtered to Pending, like the notification one: the relay only ever scans the backlog, and an
+			// unfiltered index would grow with the whole retained delivery history.
+			var pending = indexes.Single(i => i.StartsWith("IX_notification_outbox_pending :: "));
+			pending.ShouldContain("WHERE");
+			pending.ShouldContain("\"State\" = 0");
+
+			indexes.ShouldContain(i => i.StartsWith("IX_notification_outbox_NotificationId_UserId :: "));
+		}
+
+		[Fact]
+		public async Task OutboxRows_ReferenceTheirNotification_AndMessageIdsAreUnique()
+		{
+			await using var context = createContext();
+			await context.Database.MigrateAsync();
+			var notification = new Notification { Date = DateTime.UtcNow, TypeId = 1, Title = "t", Body = "b" };
+			context.Add(notification);
+			await context.SaveChangesAsync();
+			var messageId = Guid.NewGuid();
+			context.Add(new OutboxMessage { MessageId = messageId, NotificationId = notification.Id, UserId = 7, Channel = "fcm", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30), Envelope = "{}" });
+			await context.SaveChangesAsync();
+
+			var saved = await context.Set<OutboxMessage>().AsNoTracking().SingleAsync();
+			saved.MessageId.ShouldBe(messageId);
+			saved.State.ShouldBe(OutboxState.Pending);
+
+			// A second row with the same message id must be refused by the database, not just by convention.
+			await using var other = createContext();
+			other.Add(new OutboxMessage { MessageId = messageId, NotificationId = notification.Id, UserId = 8, Channel = "fcm", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30) });
+			await Should.ThrowAsync<DbUpdateException>(() => other.SaveChangesAsync());
+
+			// And a row for a notification that does not exist is refused too.
+			await using var orphan = createContext();
+			orphan.Add(new OutboxMessage { MessageId = Guid.NewGuid(), NotificationId = 999999, UserId = 1, Channel = "fcm", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30) });
+			await Should.ThrowAsync<DbUpdateException>(() => orphan.SaveChangesAsync());
+		}
+
+		[Fact]
+		public async Task TransportTypeMigration_AddsASmallintNotNullColumnThatDefaultsToPush_SoExistingRowsAndUnawareWritersMeanPush()
+		{
+			await using var context = createContext();
+			await context.GetService<IMigrator>().MigrateAsync(migrationBefore("AddNotificationTransportType", context));
+			await executeAsync("""
+				INSERT INTO notification ("Date", "TypeId", "Title", "Body", "Payload", "Status")
+				VALUES (now(), 1, 'pre-existing', 'body', '', 1);
+				""");
+
+			await context.Database.MigrateAsync();
+
+			var column = await scalarsAsync("""
+				SELECT data_type || ' / ' || is_nullable || ' / ' || coalesce(column_default, '<none>') FROM information_schema.columns
+				WHERE table_name = 'notification' AND column_name = 'TransportType'
+				""");
+			column.ShouldBe(["smallint / NO / 1"]);
+			(await scalarsAsync("""SELECT "TransportType"::text FROM notification""")).ShouldBe(["1"]); // the row that was there before
+
+			// A writer that does not know the column leaves it out of its INSERT: that must mean push too.
+			await executeAsync("""
+				INSERT INTO notification ("Date", "TypeId", "Title", "Body", "Payload", "Status")
+				VALUES (now(), 1, 'unaware writer', 'body', '', 0);
+				""");
+			var read = await context.Set<Notification>().AsNoTracking().OrderBy(n => n.Id).ToListAsync();
+			read.ShouldAllBe(n => n.TransportType == NotificationTransportType.FCM);
+
+			// And what the model writes comes back as written, email included.
+			var email = new Notification { Date = DateTime.UtcNow, TypeId = 3, Title = "t", Body = "b", TransportType = NotificationTransportType.Email };
+			var push = new Notification { Date = DateTime.UtcNow, TypeId = 3, Title = "t", Body = "b" };
+			context.AddRange(email, push);
+			await context.SaveChangesAsync();
+			(await scalarsAsync($"""SELECT "TransportType"::text FROM notification WHERE "Id" = {email.Id}""")).ShouldBe(["2"]);
+			(await scalarsAsync($"""SELECT "TransportType"::text FROM notification WHERE "Id" = {push.Id}""")).ShouldBe(["1"]);
+		}
+
+		[Fact]
+		public async Task TransportTypeMigration_MakesTheOutboxsNotificationAndUserColumnsNullable_AndKeepsTheForeignKeyTheCascadeAndTheIndex()
+		{
+			await using var context = createContext();
+			await context.Database.MigrateAsync();
+
+			var nullability = await scalarsAsync("""
+				SELECT column_name || '=' || is_nullable FROM information_schema.columns
+				WHERE table_name = 'notification_outbox' AND column_name IN ('NotificationId', 'UserId') ORDER BY 1
+				""");
+			nullability.ShouldBe(["NotificationId=YES", "UserId=YES"]);
+
+			// What CreateEmail writes: no notification and no user.
+			context.Add(new OutboxMessage { MessageId = Guid.NewGuid(), Channel = "email", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30), Envelope = "{}" });
+			await context.SaveChangesAsync();
+			var freeForm = await context.Set<OutboxMessage>().AsNoTracking().SingleAsync();
+			freeForm.NotificationId.ShouldBeNull();
+			freeForm.UserId.ShouldBeNull();
+
+			// A row that does name a notification still has to name one that exists...
+			await using var orphan = createContext();
+			orphan.Add(new OutboxMessage { MessageId = Guid.NewGuid(), NotificationId = 999999, UserId = 1, Channel = "fcm", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30) });
+			await Should.ThrowAsync<DbUpdateException>(() => orphan.SaveChangesAsync());
+
+			// ...and still goes with it, which a free-form row has no notification to do.
+			var notification = new Notification { Date = DateTime.UtcNow, TypeId = 1, Title = "t", Body = "b" };
+			context.Add(notification);
+			await context.SaveChangesAsync();
+			context.Add(new OutboxMessage { MessageId = Guid.NewGuid(), NotificationId = notification.Id, UserId = 7, Channel = "fcm", CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddMinutes(30) });
+			await context.SaveChangesAsync();
+			await executeAsync($"""DELETE FROM notification WHERE "Id" = {notification.Id}""");
+			(await scalarsAsync("""SELECT "Channel" FROM notification_outbox ORDER BY 1""")).ShouldBe(["email"]);
+
+			(await scalarsAsync("""
+				SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'FK_notification_outbox_notification_NotificationId'
+				""")).Single().ShouldContain("ON DELETE CASCADE");
+			(await scalarsAsync("SELECT indexname FROM pg_indexes WHERE tablename = 'notification_outbox' ORDER BY 1"))
+				.ShouldContain("IX_notification_outbox_NotificationId_UserId");
+		}
+
+		[Fact]
+		public async Task TheHandRunScript_YieldsTheSameSchemaAsTheMigration_AndRunningItAgainChangesNothing()
+		{
+			var script = await File.ReadAllTextAsync(scriptPath("AddNotificationTransportType"));
+
+			// One database the migrations built, and one where everything before this migration was applied the same way
+			// and this one was then run by hand from the script, as the estate does it.
+			await using var migrated = createContext();
+			await migrated.Database.MigrateAsync();
+
+			await executeAsync("CREATE DATABASE scripted");
+			var scriptedConnection = new NpgsqlConnectionStringBuilder(mPostgres.GetConnectionString()) { Database = "scripted" }.ConnectionString;
+			await executeAsync(API_SERVER_PREREQUISITE_DDL, scriptedConnection);
+			await using (var scripted = createContext(scriptedConnection))
+			{
+				await scripted.GetService<IMigrator>().MigrateAsync(migrationBefore("AddNotificationTransportType", scripted));
+				(await scalarsAsync(SHAPE_QUERY, scriptedConnection)).ShouldNotBe(await scalarsAsync(SHAPE_QUERY)); // so the comparison below can fail
+
+				await executeAsync(script, scriptedConnection);
+			}
+			var afterFirstRun = await scalarsAsync(SHAPE_QUERY, scriptedConnection);
+			afterFirstRun.ShouldBe(await scalarsAsync(SHAPE_QUERY)); // columns, nullability, defaults, indexes and constraints alike
+
+			await executeAsync(script, scriptedConnection); // guarded by the history table: nothing happens, nothing fails
+			(await scalarsAsync(SHAPE_QUERY, scriptedConnection)).ShouldBe(afterFirstRun);
+			(await scalarsAsync("""SELECT "MigrationId" FROM "__EFMigrationsHistory_Notifications" WHERE "MigrationId" LIKE '%AddNotificationTransportType'""", scriptedConnection)).Count.ShouldBe(1);
+
+			// Run on a database the migration has already been applied to, it recognises that and does nothing.
+			await executeAsync(script);
+			(await scalarsAsync(SHAPE_QUERY)).ShouldBe(afterFirstRun);
+		}
+
+		/// <summary>Every column, index and constraint of the tables this migration touches, as comparable text.</summary>
+		private const string SHAPE_QUERY = """
+			SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '<none>')
+			FROM information_schema.columns WHERE table_name IN ('notification', 'notification_outbox')
+			UNION ALL
+			SELECT 'index ' || indexdef FROM pg_indexes WHERE tablename IN ('notification', 'notification_outbox')
+			UNION ALL
+			SELECT 'constraint ' || conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+			WHERE conrelid IN ('notification'::regclass, 'notification_outbox'::regclass)
+			ORDER BY 1
+			""";
+
+		/// <summary>The migration that comes just before the named one, to stop at when the state before it is what a test needs.</summary>
+		private static string migrationBefore(string name, NotificationDatabaseContext context)
+		{
+			var all = context.Database.GetMigrations().ToList();
+			return all[all.FindIndex(m => m.EndsWith(name)) - 1];
+		}
+
+		private static string scriptPath(string name) =>
+			Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Scripts"), $"*{name}.sql").Single();
+
 		private static NotificationDatabaseContext createContext() =>
 			new NotificationDatabaseContextFactory().CreateDbContext([]);
+
+		/// <summary>A context on another database of the same container, which the factory reaches only through the environment variable it reads.</summary>
+		private static NotificationDatabaseContext createContext(string connectionString)
+		{
+			var previous = Environment.GetEnvironmentVariable("ConnectionStrings__MainDatabase");
+			Environment.SetEnvironmentVariable("ConnectionStrings__MainDatabase", connectionString);
+			try
+			{
+				return createContext();
+			}
+			finally
+			{
+				Environment.SetEnvironmentVariable("ConnectionStrings__MainDatabase", previous);
+			}
+		}
 
 		private async Task<List<string>> columnsOfAsync(string table) =>
 			await scalarsAsync($"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}' ORDER BY 1");
@@ -289,17 +498,17 @@ namespace exs.notifications_database.Tests
 		private async Task<bool> tableExistsAsync(string table) =>
 			(await scalarsAsync($"SELECT to_regclass('public.\"{table}\"')::text")).Single() != "<null>";
 
-		private async Task executeAsync(string sql)
+		private async Task executeAsync(string sql, string? connectionString = null)
 		{
-			await using var connection = new NpgsqlConnection(mPostgres.GetConnectionString());
+			await using var connection = new NpgsqlConnection(connectionString ?? mPostgres.GetConnectionString());
 			await connection.OpenAsync();
 			await using var command = new NpgsqlCommand(sql, connection);
 			await command.ExecuteNonQueryAsync();
 		}
 
-		private async Task<List<string>> scalarsAsync(string sql)
+		private async Task<List<string>> scalarsAsync(string sql, string? connectionString = null)
 		{
-			await using var connection = new NpgsqlConnection(mPostgres.GetConnectionString());
+			await using var connection = new NpgsqlConnection(connectionString ?? mPostgres.GetConnectionString());
 			await connection.OpenAsync();
 			await using var command = new NpgsqlCommand(sql, connection);
 			await using var reader = await command.ExecuteReaderAsync();

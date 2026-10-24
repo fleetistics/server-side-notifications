@@ -156,12 +156,10 @@ namespace exs.fcm_sender.Tests
 			};
 
 			var services = new ServiceCollection();
-			// NotificationsModelBuilder/CommonModelBuilder memoize "model already built" behind a
-			// process-wide static bool, not per-model-cache-key - so this must construct
-			// DbContextOptions the exact same way createContext() does everywhere else in these
-			// tests. Microsoft.Extensions.DependencyInjection's AddDbContext wires its own internal
-			// EF service provider into the options, which is a different model cache key and would
-			// hit that guard already tripped, producing a context with an empty model.
+			// Constructed the same way createContext() does everywhere else in these tests rather than via
+			// AddDbContext, which wires its own internal EF service provider into the options (a different
+			// model cache key, so a second model gets built; harmless now that the model builders guard per
+			// model, but it keeps these tests on one SQLite-friendly configuration).
 			services.AddScoped(_ => createContext());
 			services.AddScoped<IRepository>(sp => new EntityFrameworkRepository<NotificationDatabaseContext>(sp.GetRequiredService<NotificationDatabaseContext>()));
 			services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));

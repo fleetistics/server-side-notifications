@@ -1,6 +1,7 @@
 using exs.Database.Commons.Interfaces;
 using exs.notifications_model.Notifications;
 using exs.notifications_service.Interfaces;
+using exs.notifications_service.Sender;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,11 +13,16 @@ namespace exs.notifications_service.Impl
 {
 	public class NotificationService: BackgroundService, INotificationService
 	{
-		public NotificationService(IServiceScopeFactory scopeFactory, IEnumerable<ITransportNotificationProcessor> transportNotificationProcessors, IOptions<NotificationServiceOptions> options, ILogger<NotificationService> logger)
+		/// <param name="outboxSignals">
+		/// Present only when something goes through a standalone sender. Poked once rows are committed, so the
+		/// relays submit them at once instead of at their next poll.
+		/// </param>
+		public NotificationService(IServiceScopeFactory scopeFactory, IEnumerable<ITransportNotificationProcessor> transportNotificationProcessors, IOptions<NotificationServiceOptions> options, ILogger<NotificationService> logger, OutboxSignals? outboxSignals = null)
 		{
 			mScopeFactory = scopeFactory;
 			mTransportNotificationProcessors = transportNotificationProcessors;
 			mLogger = logger;
+			mOutboxSignals = outboxSignals;
 
 			var serviceOptions = options.Value;
 			mExpirationInterval = TimeSpan.FromMinutes(serviceOptions.ExpirationMinutes);
@@ -46,12 +52,13 @@ namespace exs.notifications_service.Impl
 			await base.StopAsync(cancellationToken);
 		}
 
-		public bool EnqueueNotification(int notificationId, List<int> userIds)
+		public bool EnqueueNotification(int notificationId, List<int> userIds, byte transportType)
 		{
 			var result = mNotificationQueue.Writer.TryWrite(new NotificationQueueItem
 			{
 				NotificationId = notificationId,
-				UserIds = userIds
+				UserIds = userIds,
+				TransportType = transportType
 			});
 			if (!result)
 			{
@@ -217,7 +224,9 @@ namespace exs.notifications_service.Impl
 			var items = notifications.Select(n => new NotificationQueueItem
 			{
 				NotificationId = n.Id,
-				UserIds = notificationsToUsers.Where(ntu => ntu.NotificationId == n.Id).Select(ntu => ntu.UserId).ToList()
+				UserIds = notificationsToUsers.Where(ntu => ntu.NotificationId == n.Id).Select(ntu => ntu.UserId).ToList(),
+				// The sweep rebuilds its work from the row alone, so the channel has to be on it.
+				TransportType = n.TransportType
 			}).ToList();
 
 			await processNotificationsQueue(repository, items, stoppingToken);
@@ -226,29 +235,51 @@ namespace exs.notifications_service.Impl
 		private async Task processNotificationsQueue(IRepository repository, List<NotificationQueueItem> queueItems, CancellationToken stoppingToken)
 		{
 
-			var transportProcessor = mTransportNotificationProcessors.FirstOrDefault(tp => tp.TransportType == NotificationTransportType.FCM);
-			if (transportProcessor == null)
+			// FCM, and email when the host has switched that on. A notification goes out on one of them only: its own.
+			var transportProcessors = mTransportNotificationProcessors.ToList();
+			if (transportProcessors.Count == 0)
 			{
-				mLogger.LogWarning("No transport processor found for FCM.");
+				mLogger.LogWarning("No transport processor registered.");
 				return;
 			}
 			var ids = new List<int>(queueItems.Count);
+			var unroutable = new List<int>();
 			foreach (var queueItem in queueItems)
 			{
 				try
 				{
 					stoppingToken.ThrowIfCancellationRequested();
-					await transportProcessor.ProcessNotificationAsync(repository, queueItem.NotificationId, queueItem.UserIds, stoppingToken);
+					var processorsForItem = transportProcessors.Where(p => p.TransportType == queueItem.TransportType).ToList();
+					if (processorsForItem.Count == 0)
+					{
+						// Nothing here can ever send this one (an email notification on a host whose email transport is off).
+						// Leaving it New would only have the sweep find it again and again until it expired unsent, saying
+						// nothing; give up now, and say so.
+						mLogger.LogWarning("Notification {NotificationId} is for transport {TransportType}, but no processor for it is registered on this host (is NotificationService:EmailTransport set?). Marking it Expired; it will not be sent.", queueItem.NotificationId, transportName(queueItem.TransportType));
+						unroutable.Add(queueItem.NotificationId);
+						continue;
+					}
+					foreach (var transportProcessor in processorsForItem)
+					{
+						await transportProcessor.ProcessNotificationAsync(repository, queueItem.NotificationId, queueItem.UserIds, stoppingToken);
+					}
 					await repository.SaveAsync(stoppingToken);
 					ids.Add(queueItem.NotificationId);
 				}
 				catch (Exception ex)
 				{
 					mLogger.LogError(ex, "Error processing notification {NotificationId}.", queueItem.NotificationId);
+					// A processor that already succeeded for this notification has added its rows to the shared
+					// repository, and the next item's save would commit them while this notification stays New - to
+					// be fanned out again by the sweep, and queued a second time by a processor that is not
+					// idempotent. Everything before this item has been saved already, so only its work is pending.
+					repository.DbContext.ChangeTracker.Clear();
 				}
 			}
 			if (ids.Count > 0)
 			{
+				mOutboxSignals?.NotifyAll();
+
 				// Deliberately NOT passed stoppingToken, unlike every other await in this method. Do not
 				// "fix" it by adding one back.
 				//
@@ -266,12 +297,27 @@ namespace exs.notifications_service.Impl
 				await repository.GetQueryable<Notification>(n => ids.Contains(n.Id))
 					.ExecuteUpdateAsync(s => s.SetProperty(n => n.Status, NotificationStatus.Processed));
 			}
+			if (unroutable.Count > 0)
+			{
+				// After the update above, so a shutdown cancelling this one cannot stop that one from running. Idempotent
+				// and so safe to honour the token: left New, the next sweep reaches the same verdict.
+				await repository.GetQueryable<Notification>(n => unroutable.Contains(n.Id))
+					.ExecuteUpdateAsync(s => s.SetProperty(n => n.Status, NotificationStatus.Expired), stoppingToken);
+			}
 		}
+
+		private static string transportName(byte transportType) => transportType switch
+		{
+			NotificationTransportType.FCM => "FCM",
+			NotificationTransportType.Email => "Email",
+			_ => transportType.ToString(),
+		};
 
 		private class NotificationQueueItem
 		{
 			public int NotificationId { get; set; }
 			public List<int> UserIds { get; set; } = null!;
+			public byte TransportType { get; set; }
 		}
 
 		private readonly TimeSpan FAILURE_DELAY = TimeSpan.FromSeconds(5);
@@ -286,5 +332,6 @@ namespace exs.notifications_service.Impl
 		private readonly IServiceScopeFactory mScopeFactory;
 		private readonly IEnumerable<ITransportNotificationProcessor> mTransportNotificationProcessors;
 		private readonly ILogger<NotificationService> mLogger;
+		private readonly OutboxSignals? mOutboxSignals;
 	}
 }

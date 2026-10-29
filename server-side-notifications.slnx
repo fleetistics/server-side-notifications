@@ -4,11 +4,13 @@
   <Project Path="../server-side-commons/exs.dbContextCommons/exs.dbContextCommons.csproj" />
   <Project Path="../server-side-commons/exs.modelCommons/exs.modelCommons.csproj" />
   <Project Path="exs.fcm-sender/exs.fcm-sender.csproj" Id="57144cfe-b042-4a77-9813-63081e4a7967" />
+  <Project Path="exs.notifications-contracts/exs.notifications-contracts.csproj" />
   <Project Path="exs.notifications-database/exs.notifications-database.csproj" />
   <Project Path="exs.notifications-model/exs.notifications-model.csproj" />
   <Project Path="exs.notifications-service/exs.notifications-service.csproj" />
   <Project Path="tools/exs.notifications-sender-test-app/exs.notifications-sender-test-app.csproj" />
   <Project Path="tests/exs.fcm-sender.Tests/exs.fcm-sender.Tests.csproj" />
+  <Project Path="tests/exs.notifications-contracts.Tests/exs.notifications-contracts.Tests.csproj" />
   <Project Path="tests/exs.notifications-database.Tests/exs.notifications-database.Tests.csproj" />
   <Project Path="tests/exs.notifications-service.Tests/exs.notifications-service.Tests.csproj" />
   <Project Path="tests/exs.notifications-pipeline.E2ETests/exs.notifications-pipeline.E2ETests.csproj" />

@@ -69,8 +69,8 @@ namespace exs.notifications_database.Tests
 			    "Token_CreationTime" timestamp with time zone NOT NULL,
 			    "Token_ExpirationTime" timestamp with time zone NOT NULL,
 			    "Token_LatestRefreshTime" timestamp with time zone NOT NULL,
-			    "Token_PreviousSessionRotationKey" text NOT NULL,
-			    "Token_SessionRotationKey" text NOT NULL,
+			    "Token_KeySalt" text NOT NULL,
+			    "Token_RotationCounter" integer NOT NULL,
 			    CONSTRAINT "PK_user_session" PRIMARY KEY ("Id")
 			);
 			""";

@@ -15,7 +15,9 @@ namespace exs.notifications_service.Sender
 		/// </summary>
 		/// <param name="notificationId">Null for a free-form email.</param>
 		/// <param name="userId">Null for a free-form email.</param>
-		public static OutboxMessage PendingRow(int? notificationId, int? userId, string? account, string? @ref, EmailBody body, DateTime now, DateTime expires)
+		/// <param name="cipher">Encrypts the envelope while the row waits. Null stores it as it is.</param>
+		/// <param name="template">Which template the email was written from, passed on to the sender. Null for one written by hand.</param>
+		public static OutboxMessage PendingRow(int? notificationId, int? userId, string? account, string? @ref, EmailBody body, DateTime now, DateTime expires, PayloadCipher? cipher = null, TemplateReference? template = null)
 		{
 			var messageId = Guid.NewGuid();
 			var envelope = new MessageEnvelope<EmailBody>
@@ -25,6 +27,7 @@ namespace exs.notifications_service.Sender
 				Channel = Channels.Email,
 				Account = account,
 				Ref = @ref,
+				Template = template,
 				CreatedAt = new DateTimeOffset(now, TimeSpan.Zero),
 				ExpiresAt = new DateTimeOffset(expires, TimeSpan.Zero),
 				Body = body,
@@ -38,7 +41,7 @@ namespace exs.notifications_service.Sender
 				Channel = Channels.Email,
 				Account = account,
 				Ref = @ref,
-				Envelope = ContractJson.Serialize(envelope),
+				Envelope = (cipher ?? PayloadCipher.Disabled).Protect(ContractJson.Serialize(envelope), PayloadCipher.ContextFor(messageId, Channels.Email)),
 				CreatedAt = now,
 				ExpiresAt = expires,
 				State = OutboxState.Pending,
@@ -57,15 +60,17 @@ namespace exs.notifications_service.Sender
 	{
 		private readonly IOptionsMonitor<SenderTransportOptions> mOptions;
 		private readonly TimeProvider mClock;
+		private readonly PayloadCipher? mCipher;
 
-		internal EmailOutboxWriter(IOptionsMonitor<SenderTransportOptions> options, TimeProvider clock)
+		internal EmailOutboxWriter(IOptionsMonitor<SenderTransportOptions> options, TimeProvider clock, PayloadCipher? cipher = null)
 		{
 			mOptions = options;
 			mClock = clock;
+			mCipher = cipher;
 		}
 
 		/// <summary>Checks the message and adds its outbox row to the repository. Throws ArgumentException when the message is not valid.</summary>
-		internal OutboxMessage Write(IRepository repository, EmailMessage message)
+		internal OutboxMessage Write(IRepository repository, EmailMessage message, TemplateReference? template = null)
 		{
 			EmailMessageValidator.Validate(message);
 
@@ -83,7 +88,7 @@ namespace exs.notifications_service.Sender
 
 			// The same account rule as the fan-out: the message's own, else this host's default, else none - and then the
 			// email sender picks this host's default account itself.
-			var row = EmailOutbox.PendingRow(null, null, message.Account ?? options.DefaultAccount, message.Ref, body, now, now.AddMinutes(options.MessageExpirationMinutes));
+			var row = EmailOutbox.PendingRow(null, null, message.Account ?? options.DefaultAccount, message.Ref, body, now, now.AddMinutes(options.MessageExpirationMinutes), mCipher, template);
 			repository.Create(row);
 			return row;
 		}

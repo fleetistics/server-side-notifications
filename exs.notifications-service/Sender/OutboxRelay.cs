@@ -49,13 +49,15 @@ namespace exs.notifications_service.Sender
 		private readonly TimeProvider mClock;
 		private readonly ILogger<OutboxRelay> mLogger;
 		private readonly string mChannel;
+		private readonly PayloadCipher mCipher;
 		private readonly ConcurrentDictionary<long, byte> mInFlight = new();
 		private readonly RowCooldown mRowCooldown;
 		private readonly TransportGate mGate;
 		private DateTimeOffset mLastPrune = DateTimeOffset.MinValue;
 
-		public OutboxRelay(IServiceScopeFactory scopeFactory, INotificationTransport transport, IOptions<SenderTransportOptions> options, OutboxSignal signal, TimeProvider clock, ILogger<OutboxRelay> logger, string channel = Channels.Fcm)
+		public OutboxRelay(IServiceScopeFactory scopeFactory, INotificationTransport transport, IOptions<SenderTransportOptions> options, OutboxSignal signal, TimeProvider clock, ILogger<OutboxRelay> logger, string channel = Channels.Fcm, PayloadCipher? cipher = null)
 		{
+			mCipher = cipher ?? PayloadCipher.Disabled;
 			mChannel = channel;
 			mScopeFactory = scopeFactory;
 			mTransport = transport;
@@ -240,7 +242,21 @@ namespace exs.notifications_service.Sender
 				return RelayOutcome.Rejected;
 			}
 
-			var result = await mTransport.SubmitAsync(row.Envelope, cancellationToken);
+			string envelope;
+			try
+			{
+				envelope = mCipher.Unprotect(row.Envelope, PayloadCipher.ContextFor(row.MessageId, row.Channel));
+			}
+			catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException)
+			{
+				// Our fault, not the message's: it stays pending, like a transport failure, and goes out once the key is back.
+				mLogger.LogError(ex, "The envelope of outbox row {Id} cannot be read. Is the encryption key it was written with still configured?", row.Id);
+				row.SubmitError = "The envelope cannot be decrypted (is its key configured?).";
+				await repository.SaveAsync(cancellationToken);
+				return RelayOutcome.TransportFailure;
+			}
+
+			var result = await mTransport.SubmitAsync(envelope, cancellationToken);
 
 			switch (result.Outcome)
 			{

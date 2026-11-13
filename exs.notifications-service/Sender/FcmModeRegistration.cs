@@ -84,7 +84,7 @@ namespace exs.notifications_service.Sender
 			// the same type as a duplicate and skips it, which would leave one of the two channels without a relay or puller.
 			services.AddSingleton<IHostedService>(sp => new OutboxRelay(
 				sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<INotificationTransport>(), sp.GetRequiredService<IOptions<SenderTransportOptions>>(),
-				sp.GetRequiredService<OutboxSignals>().For(Channels.Fcm), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<OutboxRelay>>(), Channels.Fcm));
+				sp.GetRequiredService<OutboxSignals>().For(Channels.Fcm), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<OutboxRelay>>(), Channels.Fcm, sp.GetRequiredService<PayloadCipher>()));
 			services.AddSingleton<IHostedService>(sp => new ResultPuller(
 				sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<INotificationTransport>(), sp, sp.GetRequiredService<IOptions<SenderTransportOptions>>(),
 				sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ResultPuller>>(), Channels.Fcm));

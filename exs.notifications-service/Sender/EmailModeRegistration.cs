@@ -86,16 +86,16 @@ namespace exs.notifications_service.Sender
 			});
 
 			services.AddSingleton<ITransportNotificationProcessor>(sp => new EmailOutboxProcessor(
-				sp, Options.Create(emailOptions(sp)), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<EmailOutboxProcessor>>()));
+				sp, Options.Create(emailOptions(sp)), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<EmailOutboxProcessor>>(), sp.GetRequiredService<PayloadCipher>()));
 
 			// Its presence is how NotificationSender knows CreateEmail has somewhere to send to.
-			services.AddSingleton(sp => new EmailOutboxWriter(sp.GetRequiredService<IOptionsMonitor<SenderTransportOptions>>(), sp.GetRequiredService<TimeProvider>()));
+			services.AddSingleton(sp => new EmailOutboxWriter(sp.GetRequiredService<IOptionsMonitor<SenderTransportOptions>>(), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<PayloadCipher>()));
 
 			// AddSingleton<IHostedService>, not AddHostedService: with a factory the latter treats a second registration of
 			// the same type as a duplicate and skips it, which would leave one of the two channels without a relay or puller.
 			services.AddSingleton<IHostedService>(sp => new OutboxRelay(
 				sp.GetRequiredService<IServiceScopeFactory>(), transport(sp), Options.Create(emailOptions(sp)),
-				sp.GetRequiredService<OutboxSignals>().For(Channels.Email), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<OutboxRelay>>(), Channels.Email));
+				sp.GetRequiredService<OutboxSignals>().For(Channels.Email), sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<OutboxRelay>>(), Channels.Email, sp.GetRequiredService<PayloadCipher>()));
 			services.AddSingleton<IHostedService>(sp => new ResultPuller(
 				sp.GetRequiredService<IServiceScopeFactory>(), transport(sp), sp, Options.Create(emailOptions(sp)),
 				sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ResultPuller>>(), Channels.Email));

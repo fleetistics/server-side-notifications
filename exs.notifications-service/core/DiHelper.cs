@@ -1,3 +1,4 @@
+using exs.notifications_contracts;
 using exs.notifications_service.Impl;
 using exs.notifications_service.Interfaces;
 using exs.notifications_service.Sender;
@@ -21,6 +22,10 @@ namespace exs.notifications_service.core
 			{
 				options.Bind(configuration.GetSection(NotificationServiceOptions.SECTION));
 			}
+
+			// What encrypts a queued message while it waits (the envelope in the outbox). Empty section: stored as it is.
+			// Built here, so a bad key stops the host at startup instead of failing the first message.
+			services.AddSingleton(PayloadCipher.Create(configuration?.GetSection($"{NotificationServiceOptions.SECTION}:Encryption").Get<PayloadCipherOptions>()));
 
 			// Read here, at registration, because the two modes register different services. A typo must not
 			// quietly fall back to the old pipeline on a host that meant to switch.

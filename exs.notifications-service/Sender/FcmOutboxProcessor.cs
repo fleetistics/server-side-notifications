@@ -24,10 +24,12 @@ namespace exs.notifications_service.Sender
 		private readonly SenderTransportOptions mOptions;
 		private readonly TimeProvider mClock;
 		private readonly ILogger<FcmOutboxProcessor> mLogger;
+		private readonly PayloadCipher mCipher;
 
 		// The resolver is looked up when first needed rather than injected; see FcmSenderHooks.
-		public FcmOutboxProcessor(IServiceProvider services, IOptions<SenderTransportOptions> options, TimeProvider clock, ILogger<FcmOutboxProcessor> logger)
+		public FcmOutboxProcessor(IServiceProvider services, IOptions<SenderTransportOptions> options, TimeProvider clock, ILogger<FcmOutboxProcessor> logger, PayloadCipher? cipher = null)
 		{
+			mCipher = cipher ?? PayloadCipher.Disabled;
 			mServices = services;
 			mOptions = options.Value;
 			mClock = clock;
@@ -85,7 +87,7 @@ namespace exs.notifications_service.Sender
 					Channel = Channels.Fcm,
 					Account = destination.Account,
 					Ref = destination.Ref,
-					Envelope = ContractJson.Serialize(envelope),
+					Envelope = mCipher.Protect(ContractJson.Serialize(envelope), PayloadCipher.ContextFor(messageId, Channels.Fcm)),
 					CreatedAt = now,
 					ExpiresAt = expires,
 					State = OutboxState.Pending,

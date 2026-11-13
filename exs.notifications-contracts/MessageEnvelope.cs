@@ -35,6 +35,12 @@ namespace exs.notifications_contracts
 		/// </summary>
 		public string? Ref { get; init; }
 
+		/// <summary>
+		/// Which template the message was written from, when the host renders its messages from templates. Optional, and
+		/// informational: the sender keeps it with the message and acts on none of it. Absent for a message written by hand.
+		/// </summary>
+		public TemplateReference? Template { get; init; }
+
 		public required TBody Body { get; init; }
 	}
 }

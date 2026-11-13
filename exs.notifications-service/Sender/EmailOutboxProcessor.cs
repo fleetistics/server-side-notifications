@@ -25,10 +25,12 @@ namespace exs.notifications_service.Sender
 		private readonly SenderTransportOptions mOptions;
 		private readonly TimeProvider mClock;
 		private readonly ILogger<EmailOutboxProcessor> mLogger;
+		private readonly PayloadCipher? mCipher;
 
 		// The resolver is looked up when first needed rather than injected; see EmailSenderHooks.
-		public EmailOutboxProcessor(IServiceProvider services, IOptions<SenderTransportOptions> options, TimeProvider clock, ILogger<EmailOutboxProcessor> logger)
+		public EmailOutboxProcessor(IServiceProvider services, IOptions<SenderTransportOptions> options, TimeProvider clock, ILogger<EmailOutboxProcessor> logger, PayloadCipher? cipher = null)
 		{
+			mCipher = cipher;
 			mServices = services;
 			mOptions = options.Value;
 			mClock = clock;
@@ -83,7 +85,7 @@ namespace exs.notifications_service.Sender
 					Html = content.Html,
 					Priority = content.Priority,
 				};
-				rows.Add(EmailOutbox.PendingRow(notificationId, destination.UserId, destination.Account ?? mOptions.DefaultAccount, destination.Ref, body, now, expires));
+				rows.Add(EmailOutbox.PendingRow(notificationId, destination.UserId, destination.Account ?? mOptions.DefaultAccount, destination.Ref, body, now, expires, mCipher));
 			}
 
 			// A user with no address still gets a row, already finished, so the delivery log answers "what

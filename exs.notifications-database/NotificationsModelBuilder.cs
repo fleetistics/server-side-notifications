@@ -1,6 +1,7 @@
 ﻿using exs.dbContextCommons;
 using exs.notifications_model.Notifications;
 using exs.notifications_model.Outbox;
+using exs.notifications_model.Templates;
 using exs.notifications_model.Transports;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,7 +21,7 @@ namespace exs.notifications_database
 
 		/// <summary>
 		/// Only the notification tables (notification, notification_type, notification2user, fcm_queue,
-		/// fcm_sent, notification_outbox, notification_transport_cursor), for a host that maps user_session
+		/// fcm_sent, notification_outbox, notification_transport_cursor, notification_template), for a host that maps user_session
 		/// itself - as pssp.api does, with its own flatter entity. Mapping the shared UserSession as well
 		/// would put two entity types on one table.
 		/// </summary>
@@ -111,6 +112,23 @@ namespace exs.notifications_database
 				entity.HasIndex(e => new { e.NotificationId, e.UserId }).HasDatabaseName("IX_notification_outbox_NotificationId_UserId");
 
 				entity.HasIndex(e => e.CompletedAt).HasDatabaseName("IX_notification_outbox_CompletedAt");
+			});
+			modelBuilder.Entity<NotificationTemplate>(entity =>
+			{
+				entity.ToTable("notification_template");
+				entity.HasKey(e => e.Id);
+				entity.Property(e => e.Id).ValueGeneratedOnAdd();
+				entity.Property(e => e.TemplateKey).HasMaxLength(128).IsRequired();
+				entity.Property(e => e.Language).HasMaxLength(16).IsRequired();
+				entity.Property(e => e.Subject).IsRequired();
+				entity.Property(e => e.CreatedBy).HasMaxLength(256);
+
+				// One row per version of a key and language.
+				entity.HasIndex(e => new { e.TemplateKey, e.Language, e.Version }).IsUnique().HasDatabaseName("UX_notification_template_Key_Language_Version");
+
+				// And at most one of them live: the database, not the editing code, is what stops two active versions.
+				// It is also the lookup index, since the processor only ever reads the active row ("IsActive" is PascalCase, so quoted).
+				entity.HasIndex(e => new { e.TemplateKey, e.Language }).IsUnique().HasDatabaseName("UX_notification_template_active").HasFilter("\"IsActive\" = TRUE");
 			});
 			modelBuilder.Entity<TransportCursor>(entity =>
 			{

@@ -18,7 +18,7 @@ namespace exs.notifications_database.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.13")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -113,6 +113,9 @@ namespace exs.notifications_database.Migrations
 
                             b1.Property<DateTime>("ExpirationTime")
                                 .HasColumnType("timestamp with time zone");
+
+                            b1.Property<bool>("IsPersistent")
+                                .HasColumnType("boolean");
 
                             b1.Property<DateTime>("LatestRefreshTime")
                                 .HasColumnType("timestamp with time zone");
@@ -327,6 +330,61 @@ namespace exs.notifications_database.Migrations
                     b.HasKey("Name");
 
                     b.ToTable("notification_transport_cursor", (string)null);
+                });
+
+            modelBuilder.Entity("exs.notifications_model.Templates.NotificationTemplate", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Html")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TemplateKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Text")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TemplateKey", "Language")
+                        .IsUnique()
+                        .HasDatabaseName("UX_notification_template_active")
+                        .HasFilter("\"IsActive\" = TRUE");
+
+                    b.HasIndex("TemplateKey", "Language", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("UX_notification_template_Key_Language_Version");
+
+                    b.ToTable("notification_template", (string)null);
                 });
 
             modelBuilder.Entity("exs.notifications_model.Transports.FcmQueue", b =>

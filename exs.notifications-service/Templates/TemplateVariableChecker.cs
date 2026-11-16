@@ -45,8 +45,8 @@ namespace exs.notifications_service.Templates
 			{
 				if (!TemplateModelValidator.IsComplex(type) || typeof(IEnumerable).IsAssignableFrom(type)) return null;
 
-				var property = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-					.FirstOrDefault(p => p.GetIndexParameters().Length == 0 && string.Equals(MemberNameStrategies.SnakeCase(p), path[i], StringComparison.OrdinalIgnoreCase));
+				var property = PublicProperties(type)
+					.FirstOrDefault(p => string.Equals(MemberNameStrategies.SnakeCase(p), path[i], StringComparison.OrdinalIgnoreCase));
 				if (property == null)
 				{
 					// The first name may be a variable the template made itself; deeper down it can only be a typo.
@@ -59,9 +59,23 @@ namespace exs.notifications_service.Templates
 			return null;
 		}
 
+		/// <summary>The public instance properties a template can name, in declaration order: what both this check and the description of a model walk.</summary>
+		internal static IEnumerable<PropertyInfo> PublicProperties(Type type) =>
+			type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetIndexParameters().Length == 0);
+
+		/// <summary>What a list of this type holds (List&lt;T&gt;, T[], IEnumerable&lt;T&gt;), or null when it is not a list of something known.</summary>
+		internal static Type? ElementTypeOf(Type type)
+		{
+			if (type.IsArray) return type.GetElementType();
+			var enumerable = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+				? type
+				: type.GetInterfaces().FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+			return enumerable?.GetGenericArguments()[0];
+		}
+
 		/// <summary>"CaseInfo" and what it offers, so the error says what the author could have meant.</summary>
 		private static string Describe(Type type) =>
-			$"{type.Name} (has: {string.Join(", ", type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetIndexParameters().Length == 0).Select(p => MemberNameStrategies.SnakeCase(p)))})";
+			$"{type.Name} (has: {string.Join(", ", PublicProperties(type).Select(p => MemberNameStrategies.SnakeCase(p)))})";
 
 		private sealed class Collector : AstVisitor
 		{

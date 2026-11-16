@@ -29,6 +29,16 @@ namespace exs.notifications_service.Templates
 			return type.IsClass || type.IsValueType;
 		}
 
+		/// <summary>
+		/// True when the property may be null by its own declaration: a nullable value type (int?), or a reference type that
+		/// the compiler does not see as non-nullable (string?). The one place that decides "optional", for the check above
+		/// and for the description of a model.
+		/// </summary>
+		internal static bool IsOptional(PropertyInfo property, NullabilityInfoContext context) =>
+			property.PropertyType.IsValueType
+				? Nullable.GetUnderlyingType(property.PropertyType) != null
+				: context.Create(property).ReadState != NullabilityState.NotNull;
+
 		private static void walk(object value, string path, int depth, NullabilityInfoContext context, HashSet<object> seen, List<string> missing)
 		{
 			if (depth > MaxDepth || !IsComplex(value.GetType())) return;
@@ -42,7 +52,7 @@ namespace exs.notifications_service.Templates
 				var propertyValue = property.GetValue(value);
 				if (propertyValue == null)
 				{
-					if (!property.PropertyType.IsValueType && context.Create(property).ReadState == NullabilityState.NotNull) missing.Add(propertyPath);
+					if (!IsOptional(property, context)) missing.Add(propertyPath);
 					continue;
 				}
 

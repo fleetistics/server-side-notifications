@@ -7,7 +7,7 @@ namespace exs.notifications_service.Templates
 	public static class TemplateDiHelper
 	{
 		/// <summary>
-		/// Registers <see cref="TemplateProcessor"/> and the <see cref="TemplateRegistry"/> of every <see cref="ITemplateModel"/>
+		/// Registers <see cref="TemplateProcessor"/>, <see cref="TemplateAuthoring"/> (what an admin screen for templates needs) and the <see cref="TemplateRegistry"/> of every <see cref="ITemplateModel"/>
 		/// found in the given assemblies (the host's own, where its models are declared). Throws at once if two models share a key.
 		/// </summary>
 		/// <param name="configuration">Optional: binds "NotificationService:Templates" to <see cref="NotificationTemplateOptions"/>.</param>
@@ -18,6 +18,7 @@ namespace exs.notifications_service.Templates
 
 			services.AddSingleton(new TemplateRegistry(modelAssemblies));
 			services.AddSingleton<TemplateProcessor>();
+			services.AddSingleton<TemplateAuthoring>();
 			return services;
 		}
 	}

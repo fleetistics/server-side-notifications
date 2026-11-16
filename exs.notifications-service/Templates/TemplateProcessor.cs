@@ -93,19 +93,53 @@ namespace exs.notifications_service.Templates
 			};
 		}
 
-		private async Task<string?> renderPart(NotificationTemplate template, string part, string? source, object model, CultureInfo culture, bool plainText)
+		/// <summary>
+		/// Fills in a template that is not in the database: the strings of a draft, with the same engine, the same escaping and the
+		/// same checks as <see cref="RenderAsync{TModel}"/> (an unknown value, a template that does not parse and unbalanced
+		/// &lt;secure&gt; tags all fail as <see cref="TemplateRenderException"/>, version 0). The result has version 0 and the
+		/// &lt;secure&gt; tags still in it, as a sender would receive them.
+		/// </summary>
+		/// <param name="key">The template key of a registered model; <paramref name="model"/> must be an instance of that model.</param>
+		/// <param name="language">The language whose culture formats dates and numbers; null for the default one.</param>
+		public async Task<RenderedTemplate> RenderDraftAsync(string key, string subject, string? text, string? html, object model, string? language = null)
+		{
+			if (key == null) throw new ArgumentNullException(nameof(key));
+			if (model == null) throw new ArgumentNullException(nameof(model));
+			if (!mRegistry.TryGetModelType(key, out var registered)) throw new InvalidOperationException($"No template model is registered for key '{key}'.");
+			if (!registered.IsInstanceOfType(model)) throw new ArgumentException($"The model must be a {registered.FullName}, not a {model.GetType().FullName}.", nameof(model));
+
+			var missing = TemplateModelValidator.FindMissing(model);
+			if (missing.Count > 0) throw new TemplateModelException(key, missing);
+
+			var normalized = normalizeLanguage(language) ?? mOptions.CurrentValue.DefaultLanguage.Trim().ToLowerInvariant();
+			var culture = cultureOf(normalized);
+			return new RenderedTemplate
+			{
+				TemplateKey = key,
+				Language = normalized,
+				Version = 0,
+				Subject = await renderSource(key, normalized, 0, "Subject", subject, model, culture, plainText: true) ?? "",
+				Text = await renderSource(key, normalized, 0, "Text", text, model, culture, plainText: true),
+				Html = await renderSource(key, normalized, 0, "Html", html, model, culture, plainText: false),
+			};
+		}
+
+		private Task<string?> renderPart(NotificationTemplate template, string part, string? source, object model, CultureInfo culture, bool plainText) =>
+			renderSource(template.TemplateKey, template.Language, template.Version, part, source, model, culture, plainText);
+
+		private async Task<string?> renderSource(string key, string language, int version, string part, string? source, object model, CultureInfo culture, bool plainText)
 		{
 			if (string.IsNullOrWhiteSpace(source)) return null;
 
 			if (!mParser.TryParse(source, out var parsed, out var error))
 			{
-				throw new TemplateRenderException(template.TemplateKey, template.Language, template.Version, part, error);
+				throw new TemplateRenderException(key, language, version, part, error);
 			}
 
 			var unknown = TemplateVariableChecker.FindUnknown(parsed, model.GetType());
 			if (unknown.Count > 0)
 			{
-				throw new TemplateRenderException(template.TemplateKey, template.Language, template.Version, part, $"it reads values the model does not have: {string.Join("; ", unknown)}.");
+				throw new TemplateRenderException(key, language, version, part, $"it reads values the model does not have: {string.Join("; ", unknown)}.");
 			}
 
 			string rendered;
@@ -117,11 +151,11 @@ namespace exs.notifications_service.Templates
 			catch (Exception ex) when (ex is not OperationCanceledException)
 			{
 				// The engine's text names the variable or filter, not a value.
-				throw new TemplateRenderException(template.TemplateKey, template.Language, template.Version, part, ex.Message, ex);
+				throw new TemplateRenderException(key, language, version, part, ex.Message, ex);
 			}
 
 			var tagProblem = SecureMarkup.Validate(rendered);
-			if (tagProblem != null) throw new TemplateRenderException(template.TemplateKey, template.Language, template.Version, part, $"the <secure> tags are wrong: {tagProblem}");
+			if (tagProblem != null) throw new TemplateRenderException(key, language, version, part, $"the <secure> tags are wrong: {tagProblem}");
 
 			return rendered;
 		}
@@ -130,7 +164,7 @@ namespace exs.notifications_service.Templates
 		private static IReadOnlyList<string> languageCandidates(string? wanted, string defaultLanguage)
 		{
 			var candidates = new List<string>();
-			var normalized = wanted?.Trim().Replace('_', '-').ToLowerInvariant();
+			var normalized = normalizeLanguage(wanted);
 			if (!string.IsNullOrEmpty(normalized))
 			{
 				candidates.Add(normalized);
@@ -141,6 +175,8 @@ namespace exs.notifications_service.Templates
 			candidates.Add(defaultLanguage.Trim().ToLowerInvariant());
 			return candidates.Distinct().ToList();
 		}
+
+		private static string? normalizeLanguage(string? language) => language?.Trim().Replace('_', '-').ToLowerInvariant() is { Length: > 0 } normalized ? normalized : null;
 
 		private static CultureInfo cultureOf(string language)
 		{

@@ -51,6 +51,9 @@ namespace exs.notifications_service.Templates
 		/// <summary>"Subject", "Text" or "Html".</summary>
 		public string Part { get; }
 
+		/// <summary>What is wrong with the part, without the template's name and version in front of it.</summary>
+		public string Problem { get; }
+
 		public TemplateRenderException(string templateKey, string language, int version, string part, string problem, Exception? inner = null)
 			: base($"Template '{templateKey}' ({language}, version {version}), part {part}: {problem}", inner)
 		{
@@ -58,6 +61,19 @@ namespace exs.notifications_service.Templates
 			Language = language;
 			Version = version;
 			Part = part;
+			Problem = problem;
+		}
+	}
+
+	/// <summary>
+	/// The JSON given as the data of a template does not fit the model class (a wrong type, a missing required property).
+	/// The message names the property path, never a value.
+	/// </summary>
+	public sealed class TemplateModelJsonException : Exception
+	{
+		public TemplateModelJsonException(string templateKey, string problem, Exception? inner = null)
+			: base($"The data for template '{templateKey}' does not fit its model: {problem}", inner)
+		{
 		}
 	}
 }

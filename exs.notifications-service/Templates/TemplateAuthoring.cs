@@ -15,12 +15,12 @@ using Microsoft.EntityFrameworkCore;
 namespace exs.notifications_service.Templates
 {
 	/// <summary>One value a template may read: its path as the template writes it, its type and whether the model may leave it null.</summary>
-	/// <param name="Path">"case.user.display_name"; the item values of a list are "items[].name".</param>
+	/// <param name="Path">"Case.User.DisplayName"; the item values of a list are "Items[].Name".</param>
 	/// <param name="Type">"string", "number", "boolean", "datetime" or "list".</param>
 	public sealed record TemplateVariable(string Path, string Type, bool Optional);
 
 	/// <summary>A registered model as an author sees it: what the template can use, and a made-up instance of it.</summary>
-	/// <param name="Sample">A JSON object keyed in snake_case with plausible values, which also deserializes into the model.</param>
+	/// <param name="Sample">A JSON object keyed by the property names as declared (PascalCase) with plausible values, which also deserializes into the model.</param>
 	public sealed record TemplateModelDescription(string Key, IReadOnlyList<TemplateVariable> Variables, JsonObject Sample);
 
 	public sealed record TemplateLanguageSummary(string Language, int? ActiveVersion, int Versions);
@@ -71,7 +71,7 @@ namespace exs.notifications_service.Templates
 
 		/// <summary>
 		/// A made-up instance of the model as JSON: "Sample &lt;PropertyName&gt;" for text, 1 for numbers, true for flags, the
-		/// current time for dates, two items in every list. Keys are snake_case, as templates write them.
+		/// current time for dates, two items in every list. Keys are the property names as declared (PascalCase), as templates write them.
 		/// </summary>
 		public static JsonObject CreateSample(Type modelType) =>
 			sampleOf(modelType, "", 0, []) as JsonObject ?? new JsonObject();
@@ -270,7 +270,7 @@ namespace exs.notifications_service.Templates
 
 			foreach (var property in TemplateVariableChecker.PublicProperties(type).Where(p => p.CanRead))
 			{
-				var path = prefix + MemberNameStrategies.SnakeCase(property);
+				var path = prefix + TemplateNaming.NameOf(property);
 				var optional = TemplateModelValidator.IsOptional(property, context);
 				var propertyType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
@@ -363,7 +363,7 @@ namespace exs.notifications_service.Templates
 					foreach (var property in TemplateVariableChecker.PublicProperties(type).Where(p => p.CanRead))
 					{
 						var value = sampleOf(property.PropertyType, property.Name, depth + 1, stack);
-						if (value != null) result[MemberNameStrategies.SnakeCase(property)] = value;
+						if (value != null) result[TemplateNaming.NameOf(property)] = value;
 					}
 
 					stack.RemoveAt(stack.Count - 1);
@@ -393,19 +393,19 @@ namespace exs.notifications_service.Templates
 			var options = new JsonSerializerOptions
 			{
 				PreferredObjectCreationHandling = JsonObjectCreationHandling.Populate,
-				TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { snakeCaseNames } },
+				TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { templateNames } },
 			};
 			options.Converters.Add(new JsonStringEnumConverter());
 			return options;
 		}
 
-		/// <summary>Names every property the way a template does (the engine's own snake_case rule), so "ExpiresAtUtc" is "expires_at_utc" here and there.</summary>
-		private static void snakeCaseNames(JsonTypeInfo typeInfo)
+		/// <summary>Names every property the way a template does (<see cref="TemplateNaming"/>, the engine's own rule: the property name as declared), so "ExpiresAtUtc" is "ExpiresAtUtc" here and there, with no naming policy.</summary>
+		private static void templateNames(JsonTypeInfo typeInfo)
 		{
 			if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
 			foreach (var property in typeInfo.Properties)
 			{
-				if (property.AttributeProvider is MemberInfo member) property.Name = MemberNameStrategies.SnakeCase(member);
+				if (property.AttributeProvider is MemberInfo member) property.Name = TemplateNaming.NameOf(member);
 			}
 		}
 	}

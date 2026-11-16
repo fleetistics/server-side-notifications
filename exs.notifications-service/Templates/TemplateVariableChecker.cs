@@ -7,7 +7,7 @@ using Fluid.Parser;
 namespace exs.notifications_service.Templates
 {
 	/// <summary>
-	/// Reads a parsed template and lists the values it asks for that its model does not have: {{ case.user.display_nmae }}.
+	/// Reads a parsed template and lists the values it asks for that its model does not have: {{ Case.User.DisplayNmae }}.
 	/// The engine itself cannot tell: below the first name it renders a name that does not exist as an empty string, which
 	/// is what a typo would turn into on the day a customer is emailed.
 	///
@@ -46,11 +46,13 @@ namespace exs.notifications_service.Templates
 				if (!TemplateModelValidator.IsComplex(type) || typeof(IEnumerable).IsAssignableFrom(type)) return null;
 
 				var property = PublicProperties(type)
-					.FirstOrDefault(p => string.Equals(MemberNameStrategies.SnakeCase(p), path[i], StringComparison.OrdinalIgnoreCase));
+					.FirstOrDefault(p => string.Equals(TemplateNaming.NameOf(p), path[i], StringComparison.Ordinal));
 				if (property == null)
 				{
-					// The first name may be a variable the template made itself; deeper down it can only be a typo.
-					return i == 0 ? null : $"{string.Join(".", path.Take(i + 1))} ({Describe(type)} has no '{path[i]}')";
+					// The first name may be a variable the template made itself (or the engine's own, like forloop); deeper down
+					// it can only be a typo. A first name that differs from a property only in case is a wrong-case name, not a variable.
+					var wrongCase = PublicProperties(type).Any(p => string.Equals(TemplateNaming.NameOf(p), path[i], StringComparison.OrdinalIgnoreCase));
+					return i == 0 && !wrongCase ? null : $"{string.Join(".", path.Take(i + 1))} ({Describe(type)} has no '{path[i]}')";
 				}
 
 				type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
@@ -75,7 +77,7 @@ namespace exs.notifications_service.Templates
 
 		/// <summary>"CaseInfo" and what it offers, so the error says what the author could have meant.</summary>
 		private static string Describe(Type type) =>
-			$"{type.Name} (has: {string.Join(", ", PublicProperties(type).Select(p => MemberNameStrategies.SnakeCase(p)))})";
+			$"{type.Name} (has: {string.Join(", ", PublicProperties(type).Select(p => TemplateNaming.NameOf(p)))})";
 
 		private sealed class Collector : AstVisitor
 		{

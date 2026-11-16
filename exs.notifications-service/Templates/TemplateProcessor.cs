@@ -24,7 +24,7 @@ namespace exs.notifications_service.Templates
 	///  - the result has well-formed `&lt;secure&gt;` tags (<see cref="SecureMarkup"/>), and no value the model supplied can form
 	///    a tag, so what the sender masks is exactly what the template author marked.
 	///
-	/// Templates are plain text with {{ values }} in snake_case ({{ case.user.display_name }}), and nothing a model does not
+	/// Templates are plain text with {{ values }} named as the model's C# properties, case-sensitively ({{ Case.User.DisplayName }}), and nothing a model does not
 	/// expose can be reached. Values are HTML-escaped in the Html part and used as they are in Subject and Text.
 	/// </summary>
 	public sealed class TemplateProcessor
@@ -42,7 +42,7 @@ namespace exs.notifications_service.Templates
 			mRegistry = registry;
 			mOptions = options;
 
-			mFluidOptions.MemberAccessStrategy.MemberNameStrategy = MemberNameStrategies.SnakeCase;
+			mFluidOptions.MemberAccessStrategy.MemberNameStrategy = TemplateNaming.Strategy;
 			// Not StrictVariables: the engine counts a null property as undefined, which would forbid the optional values
 			// (string? Nickname) that a template tests with {% if %}. A name that does not exist at all is refused here instead,
 			// and a mistyped name below the first one is found by TemplateVariableChecker before rendering.

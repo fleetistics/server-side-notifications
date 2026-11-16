@@ -93,9 +93,9 @@ namespace exs.notifications_service.Tests.Templates
 		}
 
 		[Fact]
-		public async Task ReadsNestedValuesInSnakeCase_InAllThreeParts()
+		public async Task ReadsNestedValuesByThePropertyNameAsDeclared_InAllThreeParts()
 		{
-			await AddAsync("case-updated", "en", "Case {{ case.title }}", "Hello {{ user_name }}, {{ case.user.display_name }} changed it.", "<p>Hello {{ user_name }}</p>");
+			await AddAsync("case-updated", "en", "Case {{ Case.Title }}", "Hello {{ UserName }}, {{ Case.User.DisplayName }} changed it.", "<p>Hello {{ UserName }}</p>");
 
 			var result = await RenderAsync(model());
 
@@ -110,7 +110,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task HtmlEscapesValues_ButSubjectAndTextDoNot()
 		{
-			await AddAsync("case-updated", "en", "{{ case.title }}", "{{ case.title }}", "<p>{{ case.title }}</p>");
+			await AddAsync("case-updated", "en", "{{ Case.Title }}", "{{ Case.Title }}", "<p>{{ Case.Title }}</p>");
 			var data = new CaseUpdatedData { UserName = "x", Case = new CaseInfo { Title = "A <b> & B", User = new UserInfo { DisplayName = "d" } } };
 
 			var result = await RenderAsync(data);
@@ -123,7 +123,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task ALoopOverAListOfObjectsWorks()
 		{
-			await AddAsync("case-updated", "en", "S", "{% for item in items %}[{{ item.name }}]{% endfor %}");
+			await AddAsync("case-updated", "en", "S", "{% for item in Items %}[{{ item.Name }}]{% endfor %}");
 			var data = model();
 			var withItems = new CaseUpdatedData { UserName = data.UserName, Case = data.Case, Items = [new LineItem { Name = "a" }, new LineItem { Name = "b" }] };
 
@@ -145,7 +145,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task ANullableValueThatIsMissingIsFine_AndTheTemplateCanTestForIt()
 		{
-			await AddAsync("case-updated", "en", "S", "{% if nickname %}Hi {{ nickname }}{% else %}Hi there{% endif %}");
+			await AddAsync("case-updated", "en", "S", "{% if Nickname %}Hi {{ Nickname }}{% else %}Hi there{% endif %}");
 
 			(await RenderAsync(model())).Text.ShouldBe("Hi there");
 		}
@@ -208,31 +208,67 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task AVariableThatDoesNotExistIsAnError_NotAnEmptyString()
 		{
-			await AddAsync("case-updated", "en", "S", "Hello {{ user_nmae }}");
+			await AddAsync("case-updated", "en", "S", "Hello {{ UserNmae }}");
 
 			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
 
 			ex.Part.ShouldBe("Text");
-			ex.Message.ShouldContain("user_nmae");
+			ex.Message.ShouldContain("UserNmae");
 			ex.TemplateKey.ShouldBe("case-updated");
+		}
+
+		[Fact]
+		public async Task ASnakeCaseName_NoLongerResolves_AndIsRefusedAsUnknown()
+		{
+			await AddAsync("case-updated", "en", "S", "Hello {{ user_name }}");
+
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
+
+			ex.Part.ShouldBe("Text");
+			ex.Message.ShouldContain("user_name");
+		}
+
+		[Fact]
+		public async Task ACamelCaseName_IsRefused_BecauseNamesAreCaseSensitive_AndTheMessageListsThePascalCaseOnes()
+		{
+			await AddAsync("case-updated", "en", "S", "Hello {{ userName }}");
+
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
+
+			ex.Part.ShouldBe("Text");
+			ex.Message.ShouldContain("userName");
+			ex.Message.ShouldContain("UserName, Case, Nickname, Items, Code");
+		}
+
+		[Theory]
+		[InlineData("{{ Case.User.display_name }}", "Case.User.display_name")]
+		[InlineData("{{ Case.User.displayName }}", "Case.User.displayName")]
+		public async Task ANestedNameInAnotherCasing_IsRefused_NamingThePascalCaseNamesTheModelHas(string template, string refused)
+		{
+			await AddAsync("case-updated", "en", "S", template);
+
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
+
+			ex.Message.ShouldContain(refused);
+			ex.Message.ShouldContain("DisplayName");
 		}
 
 		[Fact]
 		public async Task AMistypedNestedName_IsAnErrorNamingWhatTheModelHas_EvenWhenNothingWouldBeRendered()
 		{
-			await AddAsync("case-updated", "en", "S", "{% if false %}{{ case.user.display_nmae }}{% endif %}");
+			await AddAsync("case-updated", "en", "S", "{% if false %}{{ Case.User.DisplayNmae }}{% endif %}");
 
 			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
 
 			ex.Part.ShouldBe("Text");
-			ex.Message.ShouldContain("case.user.display_nmae");
-			ex.Message.ShouldContain("display_name");
+			ex.Message.ShouldContain("Case.User.DisplayNmae");
+			ex.Message.ShouldContain("DisplayName");
 		}
 
 		[Fact]
 		public async Task NamesThatTheTemplateMakesItselfAreNotMistaken_ForMissingValues()
 		{
-			await AddAsync("case-updated", "en", "S", "{% assign greeting = user_name %}{% for item in items %}{{ item.anything }}{% endfor %}{{ greeting }}");
+			await AddAsync("case-updated", "en", "S", "{% assign greeting = UserName %}{% for item in Items %}{{ item.anything }}{% endfor %}{{ greeting }}");
 
 			(await RenderAsync(model())).Text.ShouldBe("Sam");
 		}
@@ -240,7 +276,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task NonLatinTextIsKeptAsIsInHtml_AndOnlyTheHtmlCharactersAreEscaped()
 		{
-			await AddAsync("case-updated", "en", "{{ user_name }}", html: "<p>{{ user_name }} & {{ case.title }}</p>");
+			await AddAsync("case-updated", "en", "{{ UserName }}", html: "<p>{{ UserName }} & {{ Case.Title }}</p>");
 			var data = new CaseUpdatedData { UserName = "Олена", Case = new CaseInfo { Title = "<Ремонт>", User = new UserInfo { DisplayName = "d" } } };
 
 			var result = await RenderAsync(data);
@@ -262,7 +298,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task AnUnknownFilterIsAnError()
 		{
-			await AddAsync("case-updated", "en", "S", "{{ user_name | no_such_filter }}");
+			await AddAsync("case-updated", "en", "S", "{{ UserName | no_such_filter }}");
 
 			await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
 		}
@@ -270,7 +306,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task TheSecureTagsOfTheTemplateSurvive_SoTheSenderCanMaskThem()
 		{
-			await AddAsync("case-updated", "en", "S", "Code <secure>{{ code }}</secure> for {{ user_name }}", "<a href=\"<secure>https://x/{{ code }}</secure>\">go</a>");
+			await AddAsync("case-updated", "en", "S", "Code <secure>{{ Code }}</secure> for {{ UserName }}", "<a href=\"<secure>https://x/{{ Code }}</secure>\">go</a>");
 
 			var result = await RenderAsync(model());
 
@@ -282,7 +318,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task AValueCannotFormATag_InAnyPart()
 		{
-			await AddAsync("case-updated", "en", "Re {{ user_name }}", "Hello <secure>{{ user_name }}</secure> and {{ case.title }}", "<p><secure>{{ user_name }}</secure> {{ case.title }}</p>");
+			await AddAsync("case-updated", "en", "Re {{ UserName }}", "Hello <secure>{{ UserName }}</secure> and {{ Case.Title }}", "<p><secure>{{ UserName }}</secure> {{ Case.Title }}</p>");
 			var data = new CaseUpdatedData { UserName = "Bob</secure> leaked <secure>", Case = new CaseInfo { Title = "<secure>", User = new UserInfo { DisplayName = "d" } } };
 
 			var result = await RenderAsync(data);
@@ -297,7 +333,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task ATemplateWithUnbalancedTagsIsAnError()
 		{
-			await AddAsync("case-updated", "en", "S", "Code <secure>{{ code }}");
+			await AddAsync("case-updated", "en", "S", "Code <secure>{{ Code }}");
 
 			var ex = await Should.ThrowAsync<TemplateRenderException>(() => RenderAsync(model()));
 

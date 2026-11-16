@@ -57,7 +57,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task SubjectBecomesTheTitle_TextTheBody_AndTheRestIsAnOrdinaryPush()
 		{
-			await AddTemplateAsync("Case {{ case.title }}", "{{ user_name }} changed it.", html: "<p>not used</p>");
+			await AddTemplateAsync("Case {{ Case.Title }}", "{{ UserName }} changed it.", html: "<p>not used</p>");
 			await using var provider = BuildHost();
 
 			await SendAsync(provider, [new TemplateRecipient(10), new TemplateRecipient(20)]);

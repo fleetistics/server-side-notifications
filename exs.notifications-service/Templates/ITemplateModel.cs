@@ -13,7 +13,7 @@ namespace exs.notifications_service.Templates
 	///       public required string ResetLink { get; init; }
 	///   }
 	///
-	/// and the template reads {{ user_name }}. A non-nullable property that is null when the message is rendered is refused
+	/// and the template reads {{ UserName }}. A non-nullable property that is null when the message is rendered is refused
 	/// before anything is written. See <see cref="TemplateProcessor"/>.
 	/// </summary>
 	public interface ITemplateModel

@@ -70,7 +70,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task WritesOneOutboxRow_WithTheTemplateFilledIn_AndNothingElse()
 		{
-			await AddTemplateAsync("Case {{ case.title }} updated", "Hi {{ user_name }}, code <secure>{{ code }}</secure>", "<p>Hi {{ user_name }}</p>");
+			await AddTemplateAsync("Case {{ Case.Title }} updated", "Hi {{ UserName }}, code <secure>{{ Code }}</secure>", "<p>Hi {{ UserName }}</p>");
 			await using var provider = BuildHost();
 
 			await SendAsync(provider, new EmailEnvelope { To = "sam@example.com", ToName = "Sam Rivera" }, Model());
@@ -185,7 +185,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task AValueThatPutsALineBreakInTheSubject_IsRefused_NotSent()
 		{
-			await AddTemplateAsync("Case {{ case.title }}", "T");
+			await AddTemplateAsync("Case {{ Case.Title }}", "T");
 			await using var provider = BuildHost();
 
 			await Should.ThrowAsync<ArgumentException>(() => SendAsync(provider, new EmailEnvelope { To = "a@b.co" }, Model("one\r\nBcc: evil@x.co")));

@@ -67,21 +67,21 @@ namespace exs.notifications_service.Tests.Templates
 		// ---- the description of a model ----
 
 		[Fact]
-		public void Describe_ListsEveryLeafPathInSnakeCase_WithTypeAndOptional_ForNestedObjectsOptionalValuesAndLists()
+		public void Describe_ListsEveryLeafPathAsDeclared_WithTypeAndOptional_ForNestedObjectsOptionalValuesAndLists()
 		{
 			var description = Describe<CaseUpdatedData>();
 
 			description.Key.ShouldBe("case-updated");
 			description.Variables.Select(v => (v.Path, v.Type, v.Optional)).ToList().ShouldBe(
 			[
-				("user_name", "string", false),
-				("case.user.display_name", "string", false),
-				("case.user.phone", "string", true),
-				("case.title", "string", false),
-				("nickname", "string", true),
-				("items", "list", false),
-				("items[].name", "string", false),
-				("code", "string", false),
+				("UserName", "string", false),
+				("Case.User.DisplayName", "string", false),
+				("Case.User.Phone","string", true),
+				("Case.Title", "string", false),
+				("Nickname", "string", true),
+				("Items", "list", false),
+				("Items[].Name", "string", false),
+				("Code", "string", false),
 			]);
 		}
 
@@ -90,17 +90,17 @@ namespace exs.notifications_service.Tests.Templates
 		{
 			var variables = Describe<KindsData>().Variables.ToDictionary(v => v.Path);
 
-			variables.Keys.ShouldBe(["name", "count", "amount", "flag", "when", "until", "priority", "tags"]);
-			variables["count"].Type.ShouldBe("number");
-			variables["count"].Optional.ShouldBeFalse();
-			variables["amount"].Type.ShouldBe("number");
-			variables["amount"].Optional.ShouldBeTrue();
-			variables["flag"].Type.ShouldBe("boolean");
-			variables["when"].Type.ShouldBe("datetime");
-			variables["until"].Type.ShouldBe("datetime");
-			variables["until"].Optional.ShouldBeTrue();
-			variables["priority"].Type.ShouldBe("string");
-			variables["tags"].Type.ShouldBe("list");
+			variables.Keys.ShouldBe(["Name", "Count", "Amount", "Flag", "When", "Until", "Priority", "Tags"]);
+			variables["Count"].Type.ShouldBe("number");
+			variables["Count"].Optional.ShouldBeFalse();
+			variables["Amount"].Type.ShouldBe("number");
+			variables["Amount"].Optional.ShouldBeTrue();
+			variables["Flag"].Type.ShouldBe("boolean");
+			variables["When"].Type.ShouldBe("datetime");
+			variables["Until"].Type.ShouldBe("datetime");
+			variables["Until"].Optional.ShouldBeTrue();
+			variables["Priority"].Type.ShouldBe("string");
+			variables["Tags"].Type.ShouldBe("list");
 		}
 
 		[Fact]
@@ -116,22 +116,23 @@ namespace exs.notifications_service.Tests.Templates
 		{
 			var sample = TemplateAuthoring.CreateSample(typeof(CaseUpdatedData));
 
-			sample["user_name"]!.GetValue<string>().ShouldBe("Sample UserName");
-			sample["case"]!["user"]!["display_name"]!.GetValue<string>().ShouldBe("Sample DisplayName");
-			sample["case"]!["user"]!["phone"]!.GetValue<string>().ShouldBe("Sample Phone");
-			sample["nickname"]!.GetValue<string>().ShouldBe("Sample Nickname");
-			var items = sample["items"]!.AsArray();
+			sample["UserName"]!.GetValue<string>().ShouldBe("Sample UserName");
+			sample["Case"]!["User"]!["DisplayName"]!.GetValue<string>().ShouldBe("Sample DisplayName");
+			sample["Case"]!["User"]!["Phone"]!.GetValue<string>().ShouldBe("Sample Phone");
+			sample["Nickname"]!.GetValue<string>().ShouldBe("Sample Nickname");
+			var items = sample["Items"]!.AsArray();
 			items.Count.ShouldBe(2);
-			items[0]!["name"]!.GetValue<string>().ShouldBe("Sample Name");
+			items[0]!["Name"]!.GetValue<string>().ShouldBe("Sample Name");
+			sample.ContainsKey("userName").ShouldBeFalse();
 
 			var kinds = TemplateAuthoring.CreateSample(typeof(KindsData));
-			kinds["count"]!.GetValue<int>().ShouldBe(1);
-			kinds["amount"]!.GetValue<int>().ShouldBe(1);
-			kinds["flag"]!.GetValue<bool>().ShouldBeTrue();
-			kinds["priority"]!.GetValue<string>().ShouldBe("Normal");
-			kinds["tags"]!.AsArray().Count.ShouldBe(2);
-			kinds["extra"]!.AsObject().Count.ShouldBe(0);
-			var when = DateTime.Parse(kinds["when"]!.GetValue<string>(), null, System.Globalization.DateTimeStyles.RoundtripKind);
+			kinds["Count"]!.GetValue<int>().ShouldBe(1);
+			kinds["Amount"]!.GetValue<int>().ShouldBe(1);
+			kinds["Flag"]!.GetValue<bool>().ShouldBeTrue();
+			kinds["Priority"]!.GetValue<string>().ShouldBe("Normal");
+			kinds["Tags"]!.AsArray().Count.ShouldBe(2);
+			kinds["Extra"]!.AsObject().Count.ShouldBe(0);
+			var when = DateTime.Parse(kinds["When"]!.GetValue<string>(), null, System.Globalization.DateTimeStyles.RoundtripKind);
 			(DateTime.UtcNow - when).Duration().ShouldBeLessThan(TimeSpan.FromMinutes(5));
 		}
 
@@ -142,7 +143,7 @@ namespace exs.notifications_service.Tests.Templates
 			model.Case.User.DisplayName.ShouldBe("Sample DisplayName");
 			model.Items.Count.ShouldBe(2);
 
-			var overridden = (CaseUpdatedData)TemplateAuthoring.CreateModel("case-updated", typeof(CaseUpdatedData), JsonNode.Parse("""{"user_name":"Sam","case":{"user":{"display_name":"Sam Rivera"}},"items":[{"name":"only"}]}""")!.AsObject());
+			var overridden = (CaseUpdatedData)TemplateAuthoring.CreateModel("case-updated", typeof(CaseUpdatedData), JsonNode.Parse("""{"UserName":"Sam","Case":{"User":{"DisplayName":"Sam Rivera"}},"Items":[{"Name":"only"}]}""")!.AsObject());
 			overridden.UserName.ShouldBe("Sam");
 			overridden.Case.User.DisplayName.ShouldBe("Sam Rivera");
 			overridden.Case.Title.ShouldBe("Sample Title");
@@ -152,12 +153,12 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public void CreateModel_WithAValueOfTheWrongType_FailsNamingThePath_NotTheValue()
 		{
-			var wrong = JsonNode.Parse("""{"case":{"title":{"a":1}}}""")!.AsObject();
+			var wrong = JsonNode.Parse("""{"Case":{"Title":{"a":1}}}""")!.AsObject();
 
 			var ex = Should.Throw<TemplateModelJsonException>(() => TemplateAuthoring.CreateModel("case-updated", typeof(CaseUpdatedData), wrong));
 
 			ex.Message.ShouldContain("case-updated");
-			ex.Message.ShouldContain("title");
+			ex.Message.ShouldContain("Title");
 		}
 
 		// ---- drafts ----
@@ -168,7 +169,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task RenderDraft_FillsTheThreePartsFromTheStringsGiven_WithoutADatabase()
 		{
-			var result = await DraftAsync("Case {{ case.title }}", "Hello {{ user_name }}, {{ case.user.display_name }}", "<p>{{ user_name }}</p>");
+			var result = await DraftAsync("Case {{ Case.Title }}", "Hello {{ UserName }}, {{ Case.User.DisplayName }}", "<p>{{ UserName }}</p>");
 
 			result.Subject.ShouldBe("Case Sample Title");
 			result.Text.ShouldBe("Hello Sample UserName, Sample DisplayName");
@@ -183,7 +184,7 @@ namespace exs.notifications_service.Tests.Templates
 		{
 			var data = new CaseUpdatedData { UserName = "x", Case = new CaseInfo { Title = "A <b> & B", User = new UserInfo { DisplayName = "d" } } };
 
-			var result = await DraftAsync("{{ case.title }}", "{{ case.title }}", "<p>{{ case.title }}</p>", data: data);
+			var result = await DraftAsync("{{ Case.Title }}", "{{ Case.Title }}", "<p>{{ Case.Title }}</p>", data: data);
 
 			result.Subject.ShouldBe("A <b> & B");
 			result.Text.ShouldBe("A <b> & B");
@@ -200,12 +201,24 @@ namespace exs.notifications_service.Tests.Templates
 		}
 
 		[Fact]
-		public async Task RenderDraft_WithAnUnknownValue_ThrowsATemplateRenderException_NamingThePart()
+		public async Task Preview_RefusesAWrongCaseName_ExactlyAsARealSendWould_ListingTheNamesTheModelHas()
 		{
-			var ex = await Should.ThrowAsync<TemplateRenderException>(() => DraftAsync("S", "Hi {{ case.user.display_nmae }}"));
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => mAuthoring.PreviewAsync("case-updated", "en", "S", "{{ userName }}", null));
 
 			ex.Part.ShouldBe("Text");
-			ex.Problem.ShouldContain("display_nmae");
+			ex.Message.ShouldContain("userName");
+			ex.Message.ShouldContain("UserName, Case, Nickname, Items, Code");
+
+			await Should.ThrowAsync<TemplateRenderException>(() => mAuthoring.PreviewAsync("case-updated", "en", "S", "{{ user_name }}", null));
+		}
+
+		[Fact]
+		public async Task RenderDraft_WithAnUnknownValue_ThrowsATemplateRenderException_NamingThePart()
+		{
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => DraftAsync("S", "Hi {{ Case.User.DisplayNmae }}"));
+
+			ex.Part.ShouldBe("Text");
+			ex.Problem.ShouldContain("DisplayNmae");
 
 			var first = await Should.ThrowAsync<TemplateRenderException>(() => DraftAsync("S", "x", "<p>{{ nope }}</p>"));
 			first.Part.ShouldBe("Html");
@@ -222,7 +235,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task RenderDraft_WithAnUnbalancedSecureTag_ThrowsATemplateRenderException()
 		{
-			var ex = await Should.ThrowAsync<TemplateRenderException>(() => DraftAsync("S", "code <secure>{{ code }}"));
+			var ex = await Should.ThrowAsync<TemplateRenderException>(() => DraftAsync("S", "code <secure>{{ Code }}"));
 
 			ex.Part.ShouldBe("Text");
 			ex.Problem.ShouldContain("secure");
@@ -233,7 +246,7 @@ namespace exs.notifications_service.Tests.Templates
 		{
 			var data = new CaseUpdatedData { UserName = "</secure>", Case = new CaseInfo { Title = "t", User = new UserInfo { DisplayName = "d" } } };
 
-			var result = await DraftAsync("S", "a <secure>{{ code }}</secure> {{ user_name }}", data: data);
+			var result = await DraftAsync("S", "a <secure>{{ Code }}</secure> {{ UserName }}", data: data);
 
 			result.Text!.ShouldStartWith("a <secure>123456</secure> ");
 			SecureMarkup.Validate(result.Text).ShouldBeNull();
@@ -258,7 +271,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task Preview_ReturnsTheTextAsTheRecipientSeesIt_WithSecureTagsRemovedAndContentKept()
 		{
-			var result = await mAuthoring.PreviewAsync("case-updated", "en", "Code <secure>{{ code }}</secure>", "Your code: <secure>{{ code }}</secure>", "<p><a href=\"<secure>https://x/{{ code }}</secure>\">go</a></p>");
+			var result = await mAuthoring.PreviewAsync("case-updated", "en", "Code <secure>{{ Code }}</secure>", "Your code: <secure>{{ Code }}</secure>", "<p><a href=\"<secure>https://x/{{ Code }}</secure>\">go</a></p>");
 
 			result.Subject.ShouldBe("Code Sample Code");
 			result.Text.ShouldBe("Your code: Sample Code");
@@ -268,9 +281,9 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task Preview_WithoutOverride_UsesTheSample_AndWithOneUsesIt()
 		{
-			(await mAuthoring.PreviewAsync("case-updated", null, "{{ user_name }}", null, "<b>{{ user_name }}</b>")).Subject.ShouldBe("Sample UserName");
+			(await mAuthoring.PreviewAsync("case-updated", null, "{{ UserName }}", null, "<b>{{ UserName }}</b>")).Subject.ShouldBe("Sample UserName");
 
-			var overridden = await mAuthoring.PreviewAsync("case-updated", null, "{{ user_name }}", "{{ nickname }}", null, JsonNode.Parse("""{"user_name":"Sam","nickname":"Sammy"}""")!.AsObject());
+			var overridden = await mAuthoring.PreviewAsync("case-updated", null, "{{ UserName }}", "{{ Nickname }}", null, JsonNode.Parse("""{"UserName":"Sam","Nickname":"Sammy"}""")!.AsObject());
 			overridden.Subject.ShouldBe("Sam");
 			overridden.Text.ShouldBe("Sammy");
 			overridden.Html.ShouldBeNull();
@@ -285,7 +298,7 @@ namespace exs.notifications_service.Tests.Templates
 		[Fact]
 		public async Task Preview_WithAnOverrideThatDoesNotFitTheModel_ThrowsTemplateModelJsonException()
 		{
-			await Should.ThrowAsync<TemplateModelJsonException>(() => mAuthoring.PreviewAsync("case-updated", "en", "S", "x", null, JsonNode.Parse("""{"items":"not a list"}""")!.AsObject()));
+			await Should.ThrowAsync<TemplateModelJsonException>(() => mAuthoring.PreviewAsync("case-updated", "en", "S", "x", null, JsonNode.Parse("""{"Items":"not a list"}""")!.AsObject()));
 		}
 
 		// ---- input checks ----

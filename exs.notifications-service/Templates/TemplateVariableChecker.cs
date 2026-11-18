@@ -12,7 +12,7 @@ namespace exs.notifications_service.Templates
 	/// is what a typo would turn into on the day a customer is emailed.
 	///
 	/// It follows the plain property names of a path through the model's own classes, and stops where it can no longer be
-	/// sure: an index ({{ items[0].name }}), a dictionary, a list (a loop variable is a different object), or a name that is
+	/// sure: an index ({{ Items[0].Name }}), a dictionary, a list (a loop variable is a different object), or a name that is
 	/// not a property of the model at all, since that is a variable the template made itself ({% assign %}, {% for %}).
 	/// A first name that is neither is caught at render time instead, when the engine finds it undefined.
 	/// </summary>

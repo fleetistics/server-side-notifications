@@ -44,7 +44,7 @@ namespace exs.notifications_service.Sender
 				.AsNoTracking()
 				.ToListAsync(cancellationToken);
 
-			return candidates
+			var sessions = candidates
 				.Where(s => (s.ClientInfo.PlatformId == ClientDevicePlatform.Ios || s.ClientInfo.PlatformId == ClientDevicePlatform.Android) &&
 					!string.IsNullOrEmpty(s.ClientInfo.FCM_FID))
 				// The same device can appear in two sessions of one user (logging in again without the old
@@ -52,17 +52,28 @@ namespace exs.notifications_service.Sender
 				.GroupBy(s => (s.UserId, Token: s.ClientInfo.FCM_FID))
 				.Select(g => g.OrderByDescending(s => s.Id).First())
 				.OrderBy(s => s.UserId).ThenBy(s => s.Id)
-				.Select(s => new FcmResolvedDestination(
-					s.UserId,
-					s.ClientInfo.FCM_FID,
-					s.ClientInfo.PlatformId == ClientDevicePlatform.Ios ? FcmPlatforms.Ios : FcmPlatforms.Android,
-					accountFor(s),
-					FcmRef.ForSession(s.Id)))
+				.ToList();
+			if (sessions.Count == 0) return [];
+
+			// The app each session reports, by ClientApplicationId. Fetched once for the distinct ids and joined
+			// here, in memory, for the same reason as above: the id sits inside the owned ClientInfo.
+			var appIds = sessions.Select(s => s.ClientInfo.ClientApplicationId).Distinct().ToList();
+			var applications = await repository.GetQueryable<ClientApplication>(a => appIds.Contains(a.Id))
+				.AsNoTracking()
+				.ToListAsync(cancellationToken);
+
+			// Left join: a session whose application is unknown still gets its push, with no account (the
+			// sender then uses this host's default), rather than being dropped.
+			return sessions
+				.GroupJoin(applications, s => s.ClientInfo.ClientApplicationId, a => a.Id, (s, apps) => (Session: s, App: apps.FirstOrDefault()))
+				.Select(x => new FcmResolvedDestination(
+					x.Session.UserId,
+					x.Session.ClientInfo.FCM_FID,
+					x.Session.ClientInfo.PlatformId == ClientDevicePlatform.Ios ? FcmPlatforms.Ios : FcmPlatforms.Android,
+					x.App?.Uid,
+					FcmRef.ForSession(x.Session.Id)))
 				.ToList();
 		}
-
-		private string? accountFor(UserSession session) =>
-			mOptions.AccountsByAppId.TryGetValue(session.ClientInfo.AppUID, out var account) ? account : mOptions.DefaultAccount;
 	}
 
 	/// <summary>
